@@ -1,6 +1,7 @@
 const API_VERSION = '2026-07';
 
-export function createShop({ shop, clientId, clientSecret }) {
+export function createShop({ shop, clientId, clientSecret, allowInventoryWrites =
+  typeof process !== 'undefined' && process.env?.ALLOW_INVENTORY_WRITES === 'true' }) {
   if (!/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/i.test(shop ?? '')) {
     throw new Error(`Invalid myshopify.com admin domain: ${shop || '(missing)'}`);
   }
@@ -47,7 +48,7 @@ export function createShop({ shop, clientId, clientSecret }) {
     }
   }
 
-  return { shop, graphql };
+  return { shop, graphql, allowInventoryWrites };
 }
 
 export async function listLocations(client) {
@@ -109,7 +110,7 @@ export async function getQuantity(client, inventoryItemId, locationId, expectedS
 }
 
 export async function setQuantity(client, { inventoryItemId, locationId, from, to, key }) {
-  if (process.env.ALLOW_INVENTORY_WRITES !== 'true') {
+  if (client.allowInventoryWrites !== true) {
     throw new Error('Inventory writes are disabled; ALLOW_INVENTORY_WRITES must be true');
   }
   if (!Number.isInteger(from) || !Number.isInteger(to)) throw new Error('Inventory quantities must be integers');

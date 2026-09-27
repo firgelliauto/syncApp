@@ -1,0 +1,29 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "firgelli-inventory-sync",
+  "main": "src/cloud-worker.mjs",
+  "compatibility_date": "2026-09-26",
+  "vars": {
+    "MAIN_SHOP": "firgelliautomation.myshopify.com",
+    "CHILD_SHOP": "firgelli1.myshopify.com",
+    "MAIN_LOCATION_ID": "gid://shopify/Location/439267",
+    "CHILD_LOCATION_ID": "gid://shopify/Location/62239080646",
+    "SYNC_ENABLED": "false",
+    "ALLOW_INVENTORY_WRITES": "false"
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "SYNC_STATE", "class_name": "InventorySyncState" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["InventorySyncState"] }
+  ],
+  "triggers": { "crons": ["*/15 * * * *"] },
+  "secrets": {
+    "required": [
+      "MAIN_CLIENT_ID", "MAIN_CLIENT_SECRET", "CHILD_CLIENT_ID",
+      "CHILD_CLIENT_SECRET", "ADMIN_TOKEN"
+    ]
+  }
+}

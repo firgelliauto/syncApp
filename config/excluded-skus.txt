@@ -1,3 +1,0 @@
-# One exact SKU per line. Review this list before enabling live sync.
-# Service charge, not a physical inventory item.
-Handling Fee

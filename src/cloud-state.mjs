@@ -1,0 +1,95 @@
+// SQLite-backed Durable Object state. All methods are synchronous so the sync
+// engine can use the same queue interface as the local Node implementation.
+export function openCloudState(storage) {
+  const sql = storage.sql;
+  for (const statement of [
+    `CREATE TABLE IF NOT EXISTS skus (
+      sku TEXT PRIMARY KEY, main_item TEXT NOT NULL, child_item TEXT NOT NULL,
+      shared_qty INTEGER NOT NULL, main_qty INTEGER NOT NULL, child_qty INTEGER NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS jobs (
+      id TEXT PRIMARY KEY, sku TEXT NOT NULL, created_at TEXT NOT NULL, done_at TEXT)`,
+    `CREATE TABLE IF NOT EXISTS writes (
+      id TEXT PRIMARY KEY, sku TEXT NOT NULL, side TEXT NOT NULL,
+      from_qty INTEGER NOT NULL, to_qty INTEGER NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0, next_at INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT)`,
+    `CREATE TABLE IF NOT EXISTS prepared (
+      sku TEXT PRIMARY KEY, main_item TEXT NOT NULL, child_item TEXT NOT NULL,
+      main_qty INTEGER NOT NULL, child_qty INTEGER NOT NULL, created_at TEXT NOT NULL)`,
+    'CREATE INDEX IF NOT EXISTS jobs_pending ON jobs(done_at, created_at)',
+    'CREATE INDEX IF NOT EXISTS writes_pending ON writes(next_at)'
+  ]) sql.exec(statement);
+
+  const one = (query, ...args) => sql.exec(query, ...args).toArray()[0] ?? null;
+  const all = (query, ...args) => sql.exec(query, ...args).toArray();
+  const transact = fn => storage.transactionSync(fn);
+
+  return {
+    getSku: sku => one('SELECT * FROM skus WHERE sku = ?', sku),
+    allSkus: () => all('SELECT * FROM skus ORDER BY sku'),
+    skuCount: () => one('SELECT COUNT(*) AS count FROM skus').count,
+    findSkuByItem: (side, id) => one(
+      `SELECT sku FROM skus WHERE ${side === 'main' ? 'main_item' : 'child_item'} = ?`, id)?.sku,
+    seed(sku, mainItem, childItem, qty) {
+      if (one('SELECT 1 AS found FROM skus WHERE sku = ?', sku)) return false;
+      sql.exec(`INSERT INTO skus (sku, main_item, child_item, shared_qty, main_qty, child_qty)
+        VALUES (?, ?, ?, ?, ?, ?)`, sku, mainItem, childItem, qty, qty, qty);
+      sql.exec('DELETE FROM prepared WHERE sku = ?', sku);
+      return true;
+    },
+    enqueue(id, sku) {
+      if (one('SELECT 1 AS found FROM jobs WHERE id = ?', id)) return false;
+      sql.exec('INSERT INTO jobs (id, sku, created_at) VALUES (?, ?, ?)',
+        id, sku, new Date().toISOString());
+      return true;
+    },
+    nextWrite: () => one('SELECT * FROM writes WHERE next_at <= ? ORDER BY rowid LIMIT 1', Date.now()),
+    nextWriteAt: () => one('SELECT MIN(next_at) AS next_at FROM writes')?.next_at ?? null,
+    nextJob: () => one(`SELECT jobs.* FROM jobs WHERE done_at IS NULL AND NOT EXISTS
+      (SELECT 1 FROM writes WHERE writes.sku = jobs.sku) ORDER BY created_at LIMIT 1`),
+    hasWrite: sku => Boolean(one('SELECT 1 AS found FROM writes WHERE sku = ? LIMIT 1', sku)),
+    markJobDone: id => sql.exec('UPDATE jobs SET done_at = ? WHERE id = ?', new Date().toISOString(), id),
+    plan(sku, snapshot, target, writes) {
+      transact(() => {
+        sql.exec('UPDATE skus SET shared_qty = ?, main_qty = ?, child_qty = ? WHERE sku = ?',
+          target, snapshot.main, snapshot.child, sku);
+        for (const write of writes) sql.exec(
+          'INSERT INTO writes (id, sku, side, from_qty, to_qty) VALUES (?, ?, ?, ?, ?)',
+          write.id, sku, write.side, write.from, write.to);
+      });
+    },
+    completeWrite(write) {
+      transact(() => {
+        sql.exec(`UPDATE skus SET ${write.side === 'main' ? 'main_qty' : 'child_qty'} = ? WHERE sku = ?`,
+          write.to_qty, write.sku);
+        sql.exec('DELETE FROM writes WHERE id = ?', write.id);
+      });
+    },
+    cancelWrites: sku => sql.exec('DELETE FROM writes WHERE sku = ?', sku),
+    retryWrite(id, error, attempts) {
+      const delay = Math.min(60_000, 1000 * 2 ** Math.min(attempts, 6));
+      sql.exec('UPDATE writes SET attempts = ?, next_at = ?, last_error = ? WHERE id = ?',
+        attempts, Date.now() + delay, String(error).slice(0, 500), id);
+    },
+    pruneJobs() {
+      sql.exec('DELETE FROM jobs WHERE done_at IS NOT NULL AND done_at < ?',
+        new Date(Date.now() - 7 * 24 * 60 * 60_000).toISOString());
+    },
+    replacePrepared(rows) {
+      const now = new Date().toISOString();
+      transact(() => {
+        sql.exec('DELETE FROM prepared');
+        for (const row of rows) sql.exec(`INSERT INTO prepared
+          (sku, main_item, child_item, main_qty, child_qty, created_at)
+          VALUES (?, ?, ?, ?, ?, ?)`, row.sku, row.mainItem, row.childItem,
+          row.mainQuantity, row.childQuantity, now);
+      });
+      return now;
+    },
+    getPrepared: sku => one('SELECT * FROM prepared WHERE sku = ?', sku),
+    listPrepared: () => all('SELECT * FROM prepared ORDER BY sku'),
+    preparedCount: () => one('SELECT COUNT(*) AS count FROM prepared').count,
+    pendingCount: () => one('SELECT COUNT(*) AS count FROM jobs WHERE done_at IS NULL').count,
+    writeCount: () => one('SELECT COUNT(*) AS count FROM writes').count
+  };
+}

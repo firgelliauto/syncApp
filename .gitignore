@@ -1,4 +1,6 @@
 .env
+.dev.vars*
+.wrangler/
 *.local
 node_modules/
 reports/
