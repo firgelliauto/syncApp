@@ -1,0 +1,15 @@
+{
+  "name": "firgelli-inventory-sync",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "locations": "node --env-file=.env src/audit.mjs locations",
+    "audit": "node --env-file=.env src/audit.mjs audit",
+    "location-audit": "node --env-file=.env src/location-audit.mjs",
+    "bootstrap": "node --env-file=.env src/bootstrap.mjs",
+    "serve": "node --env-file=.env src/server.mjs",
+    "subscribe": "node --env-file=.env src/subscribe.mjs",
+    "test": "node --test"
+  },
+  "engines": { "node": ">=24.0.0 <25.0.0" }
+}
