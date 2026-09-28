@@ -47,8 +47,11 @@ export function createEngine({ state, shops, locations, onLog = console.log,
       await writeQuantity(shops[side], { inventoryItemId: side === 'main' ? row.main_item : row.child_item,
         locationId: locations[side], from: write.from_qty, to: write.to_qty, key: write.id });
       state.completeWrite(write);
-      onLog({ type: 'write', sku: write.sku, side, from: write.from_qty, to: write.to_qty,
-        message: 'Shopify confirmed the inventory update' });
+      const source = side === 'main' ? 'Child' : 'Main';
+      const destination = side === 'main' ? 'Main' : 'Child';
+      onLog({ type: side === 'main' ? 'sync_child_to_main' : 'sync_main_to_child',
+        sku: write.sku, side, from: write.from_qty, to: write.to_qty,
+        message: `${source} store order or stock change set the shared quantity to ${write.to_qty}; ${destination} store copied ${write.from_qty} → ${write.to_qty}` });
     } catch (error) {
       if (error.codes?.includes('CHANGE_FROM_QUANTITY_STALE')) {
         state.cancelWrites(write.sku);

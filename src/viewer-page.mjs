@@ -62,7 +62,7 @@ h1{font-size:30px;letter-spacing:-.04em;margin:6px 0 8px}h2{font-size:17px;lette
 </main><script nonce="${nonce}">
 const el=id=>document.getElementById(id);let data=null,plan=null,preview=null,filter='all',loading=false,previewLoading=false,retryTimer=null,sessionFailures=0;
 const date=value=>value?new Date(value).toLocaleString(): 'Not yet recorded';
-const names={webhook:'Stock change received',change:'Stock change detected',write:'Quantity updated',
+const names={webhook:'Order or stock change received',change:'Stock change detected',write:'Quantity updated',sync:'Inventory change copied',
   bootstrap:'SKU initialized',auto_enroll:'New SKU enrolled',discovery:'Daily SKU check',
   scan_complete:'Backup scan completed',scan_error:'SKU check failed',retry:'Update will retry',
   stale:'Stock changed during update',negative_blocked:'Negative stock prevented',
@@ -72,8 +72,26 @@ const names={webhook:'Stock change received',change:'Stock change detected',writ
   mirror_rebaselined:'Mirrored main-store order recorded once',shadow_baseline:'Read-only baseline refreshed',
   alert_dismissed:'Alert dismissed'};
 function node(tag,className,text){const e=document.createElement(tag);if(className)e.className=className;if(text!==undefined)e.textContent=String(text);return e}
-function line(e){const title=names[e.type]||e.type;const sku=e.sku?' · '+e.sku:'';const side=e.side==='main'?'Main store':e.side==='child'?'Child store':'';
-  const quantity=e.from_qty!==null&&e.to_qty!==null?' · '+e.from_qty+' → '+e.to_qty:'';
+const store=side=>side==='main'?'Main store':side==='child'?'Child store':'';
+const deltaText=value=>value<0?'decreased by '+Math.abs(value):'increased by '+value;
+function changeDetails(e){const match=/Main ([+-][0-9]+), child ([+-][0-9]+); shared target (-?[0-9]+)/i.exec(e.message||'');
+  return match?{mainDelta:Number(match[1]),childDelta:Number(match[2]),target:Number(match[3])}:null;}
+function combinedActivity(rows){const hidden=new Set(),combined=[];
+  for(const sync of rows){if(!sync.type.startsWith('sync_'))continue;const syncTime=Date.parse(sync.at)||0;for(const event of rows){if(['change','webhook'].includes(event.type)&&event.sku===sync.sku&&Math.abs((Date.parse(event.at)||0)-syncTime)<=120000)hidden.add(event.id)}}
+  for(const change of rows){if(change.type!=='change'||hidden.has(change.id))continue;const details=changeDetails(change);if(!details)continue;
+    const changeTime=Date.parse(change.at)||0;const writes=rows.filter(e=>e.type==='write'&&e.sku===change.sku&&!hidden.has(e.id)&&Math.abs((Date.parse(e.at)||0)-changeTime)<=120000&&e.to_qty===details.target);
+    if(!writes.length)continue;const origins=[details.mainDelta&&'main',details.childDelta&&'child'].filter(Boolean);const destinations=[...new Set(writes.map(e=>e.side))];
+    const direction=origins.length===1&&destinations.length===1?store(origins[0])+' → '+store(destinations[0]):'Both stores → shared quantity';
+    const parts=[];for(const side of ['main','child']){const delta=details[side+'Delta'];if(delta){const before=details.target-delta;parts.push(store(side)+' '+deltaText(delta)+' ('+before+' → '+details.target+')')}}
+    for(const write of writes)parts.push(store(write.side)+' copied '+write.from_qty+' → '+write.to_qty);
+    const latest=writes.reduce((a,b)=>(Date.parse(a.at)||0)>(Date.parse(b.at)||0)?a:b);combined.push({...latest,type:'sync',message:parts.join(' · '),direction});
+    hidden.add(change.id);for(const write of writes)hidden.add(write.id);for(const event of rows){if(event.type==='webhook'&&event.sku===change.sku&&Math.abs((Date.parse(event.at)||0)-changeTime)<=120000)hidden.add(event.id)}}
+  return [...rows.filter(e=>!hidden.has(e.id)),...combined].sort((a,b)=>(Date.parse(b.at)||0)-(Date.parse(a.at)||0));}
+function line(e){const sku=e.sku?' · '+e.sku:'';if(e.type==='sync')return{title:'Inventory copied: '+e.direction+sku,detail:e.message};
+  if(e.type==='sync_main_to_child')return{title:'Inventory copied: Main store → Child store'+sku,detail:e.message};
+  if(e.type==='sync_child_to_main')return{title:'Inventory copied: Child store → Main store'+sku,detail:e.message};
+  if(e.type==='webhook')return{title:'Order or stock change received on '+store(e.side)+sku,detail:e.message.includes('paused')?'Sync is paused; the change was logged only.':'Waiting for the app to compare both stores.'};
+  const title=names[e.type]||e.type;const side=store(e.side);const quantity=e.from_qty!==null&&e.to_qty!==null?' · '+e.from_qty+' → '+e.to_qty:'';
   return {title:title+sku,detail:[side+quantity,e.message].filter(Boolean).join(' · ')};}
 function renderRows(target,rows,empty){const box=el(target);box.replaceChildren();if(!rows.length){box.append(node('div','empty',empty));return}
   for(const e of rows){const row=node('div','entry');row.append(node('span','badge '+(e.level==='error'?'error':e.level==='warning'?'warning':''),e.level));
@@ -115,8 +133,8 @@ function render(){if(!data)return;const s=data.status,c=data.control;el('live').
   const problems=[...blocks,...activeRetries.map(w=>({at:new Date(w.next_at).toISOString(),level:'error',type:'retry',sku:w.sku,side:w.side,from_qty:w.from_qty,to_qty:w.to_qty,message:w.last_error||'Pending retry'})),...data.problems.map(e=>({...e,dismissable:c.canManage}))]
     .sort((a,b)=>(Date.parse(b.at)||0)-(Date.parse(a.at)||0));
   el('problemCount').textContent=blocks.length+' blocked · '+activeRetries.length+' active retries · '+data.problems.length+' alerts';renderRows('problems',problems.slice(0,5),'No recent warnings or failed updates.');
-  const q=el('search').value.trim().toLowerCase();let rows=data.activity.filter(e=>!q||e.sku?.toLowerCase().includes(q));
-  if(filter==='problems')rows=rows.filter(e=>e.level!=='info');if(filter==='changes')rows=rows.filter(e=>['change','write','bootstrap','auto_enroll'].includes(e.type));
+  const q=el('search').value.trim().toLowerCase();let rows=combinedActivity(data.activity).filter(e=>!q||e.sku?.toLowerCase().includes(q));
+  if(filter==='problems')rows=rows.filter(e=>e.level!=='info');if(filter==='changes')rows=rows.filter(e=>['sync','sync_main_to_child','sync_child_to_main','change','write','bootstrap','auto_enroll'].includes(e.type));
   renderRows('activity',rows,'No events match this view.');renderQueue();renderPlan();}
 async function viewerRequest(path,method='GET'){const request=async()=>fetch(path,{method,headers:{Authorization:'Bearer '+await window.shopify.idToken()},cache:'no-store'});
   let res=await request();if(res.status===401)res=await request();if(!res.ok){const body=await res.json().catch(()=>({}));throw Error(body.error||'Preview unavailable ('+res.status+').')}return res.json()}
