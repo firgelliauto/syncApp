@@ -135,7 +135,7 @@ export default {
     const route = url.pathname.slice('/admin'.length);
     const allowed = (route === '/status' || route === '/plan' || route === '/prepared' ||
       route === '/discovery') ? request.method === 'GET'
-      : (route === '/bootstrap' || route === '/discovery/scan') ? request.method === 'POST' : false;
+      : (route === '/bootstrap' || route === '/stage' || route === '/discovery/scan') ? request.method === 'POST' : false;
     if (!allowed) return json({ error: 'Not found' }, 404);
     return stub.fetch(new Request(`https://internal${route}`, {
       method: request.method, body: request.method === 'POST' ? await request.text() : undefined
@@ -180,8 +180,9 @@ export class InventorySyncState extends DurableObject {
         preparedSkus: this.state.preparedCount(), pendingJobs: this.state.pendingCount(),
         pendingWrites: this.state.writeCount(), syncEnabled: this.env.SYNC_ENABLED === 'true',
         inventoryWritesEnabled: this.env.ALLOW_INVENTORY_WRITES === 'true',
-        rolloutReady: rolloutReady(this.env), operatorPaused: this.state.isPaused(),
+        rolloutReady: this.ready(), operatorPaused: this.state.isPaused(),
         active: this.live(),
+        initialStagedAt: this.state.initialStagedAt(),
         autoEnrollmentEnabled: this.autoEnrollmentEnabled(),
         discovery: this.state.discoveryStatus() });
       if (path === '/overview' && request.method === 'GET') {
@@ -190,7 +191,7 @@ export class InventorySyncState extends DurableObject {
           initializedSkus: this.state.skuCount(), pendingJobs: this.state.pendingCount(),
           pendingWrites: this.state.writeCount(), syncEnabled: this.env.SYNC_ENABLED === 'true',
           inventoryWritesEnabled: this.env.ALLOW_INVENTORY_WRITES === 'true',
-          active: this.live(),
+          active: this.live(), initialStagedAt: this.state.initialStagedAt(),
           discovery: { lastScanAt: discovery.lastScanAt,
             candidateCount: discovery.candidates.length }
         }, control: this.controlStatus(url.searchParams.get('canManage') === '1'),
@@ -206,7 +207,7 @@ export class InventorySyncState extends DurableObject {
       if (path === '/control' && request.method === 'POST') {
         const { action } = await request.json();
         if (action === 'resume') {
-          if (!rolloutReady(this.env)) return json({ error: 'Full rollout is not enabled' }, 409);
+          if (!this.ready()) return json({ error: 'Full rollout is not staged and enabled' }, 409);
           if (this.state.isPaused()) {
             this.state.setPaused(false);
             this.state.requestReconcile();
@@ -245,6 +246,16 @@ export class InventorySyncState extends DurableObject {
         catch { return json({ error: 'Expected JSON' }, 400); }
         return json(await this.bootstrapSku(input?.sku, input?.planId));
       }
+      if (path === '/stage' && request.method === 'POST') {
+        const input = await request.json();
+        if (this.env.SYNC_ENABLED === 'true' || this.env.ALLOW_INVENTORY_WRITES === 'true' ||
+            !this.state.isPaused()) throw new Error('Staging requires syncing and inventory writes to be off');
+        if (typeof input?.planId !== 'string') throw new Error('Provide the reviewed plan ID');
+        const result = this.state.stagePrepared(input.planId);
+        this.logActivity({ type: 'catalog_staged',
+          message: `${result.stagedSkus} SKUs staged without Shopify inventory changes; ${result.initialChanges} initial differences queued` });
+        return json(result);
+      }
       if (path === '/reconcile') {
         if (this.live()) await this.reconcile();
         return json({ accepted: true });
@@ -257,7 +268,11 @@ export class InventorySyncState extends DurableObject {
   }
 
   live() {
-    return syncActive(this.env, this.state.isPaused());
+    return this.ready() && syncActive(this.env, this.state.isPaused());
+  }
+
+  ready() {
+    return rolloutReady(this.env) && Boolean(this.state.initialStagedAt());
   }
 
   autoEnrollmentEnabled() {
@@ -266,7 +281,7 @@ export class InventorySyncState extends DurableObject {
 
   controlStatus(canManage = false) {
     return { active: this.live(), paused: this.state.isPaused(),
-      rolloutReady: rolloutReady(this.env), canManage };
+      rolloutReady: this.ready(), canManage };
   }
 
   async scheduleSoon() {
@@ -299,6 +314,7 @@ export class InventorySyncState extends DurableObject {
 
   async prepare() {
     if (this.env.SYNC_ENABLED === 'true') throw new Error('Pause sync before preparing a bootstrap plan');
+    if (this.state.initialStagedAt()) throw new Error('Initial catalog is already staged');
     const [main, child] = await Promise.all([
       listVariants(this.shops.main, this.locations.main),
       listVariants(this.shops.child, this.locations.child)
@@ -312,7 +328,8 @@ export class InventorySyncState extends DurableObject {
 
   prepared() {
     const rows = this.state.listPrepared();
-    return { planId: rows[0]?.created_at ?? null, eligible: rows.length,
+    return { planId: rows[0]?.created_at ?? null, stagedAt: this.state.initialStagedAt(),
+      eligible: rows.length,
       candidates: rows.map(({ sku }) => sku),
       changes: rows.filter(row => row.main_qty !== row.child_qty).map(row => ({
         sku: row.sku, mainQuantity: row.main_qty, childQuantity: row.child_qty

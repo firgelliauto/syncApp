@@ -104,6 +104,35 @@ export function openCloudState(storage) {
     getPrepared: sku => one('SELECT * FROM prepared WHERE sku = ?', sku),
     listPrepared: () => all('SELECT * FROM prepared ORDER BY sku'),
     preparedCount: () => one('SELECT COUNT(*) AS count FROM prepared').count,
+    initialStagedAt: () => one("SELECT value FROM operations WHERE key = 'initial_staged_at'")?.value ?? null,
+    stagePrepared(planId) {
+      const rows = all('SELECT * FROM prepared ORDER BY sku');
+      if (!rows.length || rows.some(row => row.created_at !== planId)) {
+        throw new Error('Prepared plan changed; refresh and review it again');
+      }
+      if (one("SELECT value FROM operations WHERE key = 'initial_staged_at'")) {
+        throw new Error('Initial catalog is already staged');
+      }
+      if (rows.some(row => one('SELECT 1 AS found FROM skus WHERE sku = ?', row.sku))) {
+        throw new Error('A prepared SKU is already tracked; refresh the plan');
+      }
+      const now = new Date().toISOString();
+      let initialChanges = 0;
+      transact(() => {
+        for (const row of rows) {
+          sql.exec(`INSERT INTO skus (sku, main_item, child_item, shared_qty, main_qty, child_qty)
+            VALUES (?, ?, ?, ?, ?, ?)`, row.sku, row.main_item, row.child_item,
+            row.main_qty, row.main_qty, row.child_qty);
+          if (row.main_qty !== row.child_qty) {
+            sql.exec('INSERT INTO jobs (id, sku, created_at) VALUES (?, ?, ?)',
+              `initial:${row.sku}`, row.sku, now);
+            initialChanges++;
+          }
+        }
+        sql.exec("INSERT INTO operations (key, value) VALUES ('initial_staged_at', ?)", now);
+      });
+      return { stagedAt: now, stagedSkus: rows.length, initialChanges };
+    },
     discoveryStatus: () => ({
       baselineAt: one("SELECT value FROM discovery_meta WHERE key = 'baseline_at'")?.value ?? null,
       lastScanAt: one("SELECT value FROM discovery_meta WHERE key = 'last_scan_at'")?.value ?? null,

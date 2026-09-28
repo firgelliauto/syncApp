@@ -47,7 +47,7 @@ h1{font-size:30px;letter-spacing:-.04em;margin:6px 0 8px}h2{font-size:17px;lette
 <div class="card"><div class="label">New SKU candidates</div><div class="value" id="new">—</div><div class="hint">Found in daily discovery</div></div>
 </div>
 <section class="panel controlpanel" aria-labelledby="controlHeading"><div class="controlcopy"><div class="controltitle"><h2 id="controlHeading">Sync control</h2><span class="mode off" id="controlState">OFF</span></div><p id="controlMessage">Checking control status…</p><small id="controlHint"></small></div><button id="controlButton" class="controlbutton enable" type="button" disabled hidden>Enable syncing</button></section>
-<section class="panel previewpanel" aria-labelledby="initialHeading"><div class="previewhead"><div><h2 id="initialHeading">Initial copy preview</h2><p class="previewnote">Read-only snapshot: these child-store quantities would be set to the main store quantities during full rollout. Stock may change before then.</p></div><div class="previewactions"><input id="planSearch" class="search" type="search" placeholder="Find SKU" aria-label="Find SKU in initial copy plan"><button class="refresh" id="refreshPlan" type="button" hidden>Refresh stock plan</button></div></div><p class="previewnote" id="planSummary">Loading plan…</p><div id="planRows" class="previewlist"></div></section>
+<section class="panel previewpanel" aria-labelledby="initialHeading"><div class="previewhead"><div><h2 id="initialHeading">Initial copy preview</h2><p class="previewnote" id="planDescription">Read-only snapshot: these child-store quantities would be set to the main store quantities during full rollout. Stock may change before then.</p></div><div class="previewactions"><input id="planSearch" class="search" type="search" placeholder="Find SKU" aria-label="Find SKU in initial copy plan"><button class="refresh" id="refreshPlan" type="button" hidden>Refresh stock plan</button></div></div><p class="previewnote" id="planSummary">Loading plan…</p><div id="planRows" class="previewlist"></div></section>
 <section class="panel previewpanel" aria-labelledby="queueHeading"><div class="previewhead"><div><h2 id="queueHeading">Pending work preview</h2><p class="previewnote">Queued Shopify changes and updates waiting while syncing is off. Estimates use current stock and will be checked again before any update.</p></div><button class="refresh" id="refreshPreview" type="button">Check current stock</button></div><p class="previewnote" id="queueSummary">Loading queue…</p><div id="queueRows" class="previewlist"></div></section>
 <div class="two"><section class="panel"><div class="panelhead"><h2>Connection details</h2></div><div class="facts">
 <div class="fact"><span>Main store</span><b>Firgelli Automation · 1350 Slater Road</b></div>
@@ -65,7 +65,7 @@ const names={webhook:'Stock change received',change:'Stock change detected',writ
   scan_complete:'Backup scan completed',scan_error:'SKU check failed',retry:'Update will retry',
   stale:'Stock changed during update',negative_blocked:'Negative stock prevented',
   cloud_error:'App operation failed',worker_error:'Sync worker failed',auto_enroll_error:'New SKU enrollment failed',
-  sync_paused:'Sync paused',sync_resumed:'Sync enabled'};
+  sync_paused:'Sync paused',sync_resumed:'Sync enabled',catalog_staged:'Catalog staged'};
 function node(tag,className,text){const e=document.createElement(tag);if(className)e.className=className;if(text!==undefined)e.textContent=String(text);return e}
 function line(e){const title=names[e.type]||e.type;const sku=e.sku?' · '+e.sku:'';const side=e.side==='main'?'Main store':e.side==='child'?'Child store':'';
   const quantity=e.from_qty!==null&&e.to_qty!==null?' · '+e.from_qty+' → '+e.to_qty:'';
@@ -75,7 +75,8 @@ function renderRows(target,rows,empty){const box=el(target);box.replaceChildren(
     const body=node('div');const info=line(e);body.append(node('strong','',info.title));if(info.detail)body.append(node('small','',info.detail));row.append(body,node('span','time',date(e.at)));box.append(row)}}
 function previewRow(target,sku,detail){const row=node('div','previewrow');row.append(node('strong','',sku),node('span','',detail));target.append(row)}
 function renderPlan(){const box=el('planRows');box.replaceChildren();if(!plan?.planId){el('planSummary').textContent='No stock plan has been generated yet. Refresh the stock plan to preview it.';return}
-  const changes=plan.changes||[];const eligible=plan.eligible??plan.candidates?.length??0;el('planSummary').textContent=eligible+' matching SKUs · '+changes.length+' child quantities would change · '+(eligible-changes.length)+' already match · snapshot '+date(plan.planId);
+  const staged=Boolean(plan.stagedAt);el('planDescription').textContent=staged?'Staged baseline, with no Shopify inventory changes yet. When you enable syncing, queued differences and newer stock changes will be reconciled using current quantities.':'Read-only snapshot: these child-store quantities would be set to the main store quantities during full rollout. Stock may change before then.';
+  const changes=plan.changes||[];const eligible=plan.eligible??plan.candidates?.length??0;el('planSummary').textContent=eligible+' matching SKUs · '+changes.length+' initial child differences · '+(eligible-changes.length)+' matched at staging · '+(staged?'staged ':'snapshot ')+date(staged?plan.stagedAt:plan.planId);
   const query=el('planSearch').value.trim().toLowerCase();const filtered=changes.filter(r=>r.sku.toLowerCase().includes(query));
   if(!filtered.length){box.append(node('div','empty',query?'No changed SKUs match this search.':'No child quantities need changing in this snapshot.'));return}
   for(const row of filtered)previewRow(box,row.sku,'Child '+row.childQuantity+' → '+row.mainQuantity+' (main)');}
@@ -90,7 +91,7 @@ function renderQueue(){if(!data)return;const box=el('queueRows');box.replaceChil
   if(data.status.pendingJobs>jobs.reduce((sum,row)=>sum+row.event_count,0))box.append(node('p','previewnote','More queued events exist. The first 100 SKUs are shown.'));
   if(preview&&preview.previewedSkus<jobs.length)box.append(node('p','previewnote','Quantity estimates are shown for the first 20 queued SKUs.'));}
 function render(){if(!data)return;const s=data.status,c=data.control;el('live').textContent=s.active?'On':'Off';el('live').className='value '+(s.active?'good':'bad');
-  el('refreshPlan').hidden=!c.canManage;
+  el('refreshPlan').hidden=!c.canManage||Boolean(s.initialStagedAt);
   el('tracked').textContent=s.initializedSkus;el('pending').textContent=s.pendingJobs+s.pendingWrites;el('pending').className='value '+(s.pendingJobs+s.pendingWrites?'bad':'good');
   el('new').textContent=s.discovery.candidateCount;el('discovery').textContent=date(s.discovery.lastScanAt);el('scan').textContent=date(data.lastCompletedScan);
   el('updated').textContent='Updated '+new Date().toLocaleTimeString();const banner=el('banner');banner.className='banner '+(s.active?'good':'');
