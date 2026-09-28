@@ -5,13 +5,21 @@ export function createEngine({ state, shops, locations, onLog = console.log,
   readQuantity = getQuantity, writeQuantity = setQuantity, canProcess = () => true }) {
   async function scanSku(sku) {
     const row = state.getSku(sku);
-    if (!row || state.hasWrite(sku)) return;
+    if (!row || state.hasWrite(sku) || state.getBlock?.(sku)) return;
     const [main, child] = await Promise.all([
       readQuantity(shops.main, row.main_item, locations.main, sku),
       readQuantity(shops.child, row.child_item, locations.child, sku)
     ]);
     if (!Number.isInteger(main) || !Number.isInteger(child)) {
       throw new Error(`${sku}: inventory level unavailable; check selected locations`);
+    }
+    const mainDelta = main - row.main_qty;
+    const childDelta = child - row.child_qty;
+    if (mainDelta !== 0 && childDelta !== 0) {
+      const message = `Both stores changed: main ${row.main_qty} → ${main} (${mainDelta >= 0 ? '+' : ''}${mainDelta}), child ${row.child_qty} → ${child} (${childDelta >= 0 ? '+' : ''}${childDelta}). Could be separate sales or another sync app; no quantity was written.`;
+      state.blockSku?.(sku, main, child, message);
+      onLog({ type: 'ambiguous_change', level: 'error', sku, main, child, message });
+      return;
     }
     const target = row.shared_qty + (main - row.main_qty) + (child - row.child_qty);
     if (target < 0) {

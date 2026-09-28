@@ -134,6 +134,7 @@ export default {
         !env.ADMIN_TOKEN) return json({ error: 'Unauthorized' }, 401);
     const route = url.pathname.slice('/admin'.length);
     const allowed = (route === '/status' || route === '/plan' || route === '/prepared' ||
+      route === '/preflight' ||
       route === '/discovery') ? request.method === 'GET'
       : (route === '/bootstrap' || route === '/stage' || route === '/discovery/scan') ? request.method === 'POST' : false;
     if (!allowed) return json({ error: 'Not found' }, 404);
@@ -198,16 +199,25 @@ export class InventorySyncState extends DurableObject {
         lastCompletedScan: this.state.lastCompletedScan(),
         pendingWrites: this.state.pendingWrites(),
         pendingJobs: this.state.pendingJobs(),
+        blockedSkus: this.state.blockedSkus(),
         problems: this.state.recentProblems(20),
         activity: this.state.recentActivity(150) });
       }
       if (path === '/plan' && request.method === 'GET') return json(this.prepared());
+      if (path === '/preflight' && request.method === 'GET') {
+        const conflicts = await this.preflightConflicts();
+        return json({ conflicts, blockedSkus: this.state.blockedSkus(),
+          active: this.live(), paused: this.state.isPaused() });
+      }
       if (path === '/plan' && request.method === 'POST') return json(await this.prepare());
       if (path === '/preview' && request.method === 'GET') return json(await this.pendingPreview());
       if (path === '/control' && request.method === 'POST') {
         const { action } = await request.json();
         if (action === 'resume') {
           if (!this.ready()) return json({ error: 'Full rollout is not staged and enabled' }, 409);
+          const conflicts = await this.preflightConflicts();
+          if (conflicts.length) return json({ error: `${conflicts.length} SKU(s) changed in both stores. Resolve the blocked SKUs before enabling.` }, 409);
+          if (this.state.blockedCount()) return json({ error: 'Blocked SKUs need review before enabling' }, 409);
           if (this.state.isPaused()) {
             this.state.setPaused(false);
             this.state.requestReconcile();
@@ -281,7 +291,39 @@ export class InventorySyncState extends DurableObject {
 
   controlStatus(canManage = false) {
     return { active: this.live(), paused: this.state.isPaused(),
-      rolloutReady: this.ready(), canManage };
+      rolloutReady: this.ready(), blockedSkus: this.state.blockedCount(), canManage };
+  }
+
+  async preflightConflicts() {
+    const [main, child] = await Promise.all([
+      listVariants(this.shops.main, this.locations.main),
+      listVariants(this.shops.child, this.locations.child)
+    ]);
+    const mainByItem = new Map(main.map(row => [row.inventoryItemId, row]));
+    const childByItem = new Map(child.map(row => [row.inventoryItemId, row]));
+    const conflicts = [];
+    for (const row of this.state.allSkus()) {
+      const a = mainByItem.get(row.main_item);
+      const b = childByItem.get(row.child_item);
+      if (!a || !b || a.sku !== row.sku || b.sku !== row.sku ||
+          !Number.isInteger(a.quantity) || !Number.isInteger(b.quantity)) {
+        conflicts.push(row.sku);
+        this.state.blockSku(row.sku, a?.quantity ?? -1, b?.quantity ?? -1,
+          'SKU, inventory item, or selected location changed; no quantity was written.');
+        continue;
+      }
+      const mainDelta = a.quantity - row.main_qty;
+      const childDelta = b.quantity - row.child_qty;
+      if (mainDelta !== 0 && childDelta !== 0) {
+        conflicts.push(row.sku);
+        const reason = `Both stores changed: main ${row.main_qty} → ${a.quantity} (${mainDelta >= 0 ? '+' : ''}${mainDelta}), child ${row.child_qty} → ${b.quantity} (${childDelta >= 0 ? '+' : ''}${childDelta}); no quantity was written.`;
+        if (!this.state.getBlock(row.sku)) {
+          this.logActivity({ type: 'ambiguous_change', level: 'error', sku: row.sku, message: reason });
+        }
+        this.state.blockSku(row.sku, a.quantity, b.quantity, reason);
+      }
+    }
+    return conflicts;
   }
 
   async scheduleSoon() {
@@ -342,6 +384,9 @@ export class InventorySyncState extends DurableObject {
     for (const job of jobs) {
       const sku = this.state.getSku(job.sku);
       if (!sku) { rows.push({ sku: job.sku, error: 'SKU is not tracked' }); continue; }
+      const block = this.state.getBlock(job.sku);
+      if (block) { rows.push({ sku: job.sku, main: block.main_qty, child: block.child_qty,
+        target: null, error: block.reason }); continue; }
       if (this.state.hasWrite(job.sku)) { rows.push({ sku: job.sku,
         note: 'An earlier planned update is waiting; see pending writes.' }); continue; }
       try {
@@ -351,6 +396,13 @@ export class InventorySyncState extends DurableObject {
         ]);
         if (!Number.isInteger(main) || !Number.isInteger(child)) throw new Error('Inventory level unavailable');
         const target = sku.shared_qty + (main - sku.main_qty) + (child - sku.child_qty);
+        const mainDelta = main - sku.main_qty;
+        const childDelta = child - sku.child_qty;
+        if (mainDelta !== 0 && childDelta !== 0) {
+          rows.push({ sku: job.sku, main, child, target: null, mainChange: null,
+            childChange: null, error: `Both stores changed (main ${mainDelta >= 0 ? '+' : ''}${mainDelta}, child ${childDelta >= 0 ? '+' : ''}${childDelta}). Ambiguous; no update will be made.` });
+          continue;
+        }
         rows.push({ sku: job.sku, main, child, target, mainChange: target - main,
           childChange: target - child, error: target < 0 ? 'Combined stock would be negative; update blocked' : null });
       } catch (error) { rows.push({ sku: job.sku, error: error.message }); }
@@ -447,6 +499,7 @@ export class InventorySyncState extends DurableObject {
       child: new Map(child.map(v => [v.inventoryItemId, v.quantity]))
     };
     for (const row of this.state.allSkus()) {
+      if (this.state.getBlock(row.sku)) continue;
       if (byItem.main.get(row.main_item) !== row.main_qty ||
           byItem.child.get(row.child_item) !== row.child_qty) {
         this.state.enqueue(randomUUID(), row.sku);

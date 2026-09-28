@@ -16,6 +16,9 @@ export function openCloudState(storage) {
     `CREATE TABLE IF NOT EXISTS prepared (
       sku TEXT PRIMARY KEY, main_item TEXT NOT NULL, child_item TEXT NOT NULL,
       main_qty INTEGER NOT NULL, child_qty INTEGER NOT NULL, created_at TEXT NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS blocked_skus (
+      sku TEXT PRIMARY KEY, main_qty INTEGER NOT NULL, child_qty INTEGER NOT NULL,
+      reason TEXT NOT NULL, blocked_at TEXT NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS discovery_meta (
       key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS observed_main_skus (
@@ -63,6 +66,13 @@ export function openCloudState(storage) {
     nextJob: () => one(`SELECT jobs.* FROM jobs WHERE done_at IS NULL AND NOT EXISTS
       (SELECT 1 FROM writes WHERE writes.sku = jobs.sku) ORDER BY created_at LIMIT 1`),
     hasWrite: sku => Boolean(one('SELECT 1 AS found FROM writes WHERE sku = ? LIMIT 1', sku)),
+    getBlock: sku => one('SELECT * FROM blocked_skus WHERE sku = ?', sku),
+    blockedSkus: () => all('SELECT * FROM blocked_skus ORDER BY blocked_at DESC'),
+    blockedCount: () => one('SELECT COUNT(*) AS count FROM blocked_skus').count,
+    blockSku(sku, main, child, reason) {
+      sql.exec(`INSERT OR REPLACE INTO blocked_skus (sku, main_qty, child_qty, reason, blocked_at)
+        VALUES (?, ?, ?, ?, ?)`, sku, main, child, reason, new Date().toISOString());
+    },
     markJobDone: id => sql.exec('UPDATE jobs SET done_at = ? WHERE id = ?', new Date().toISOString(), id),
     plan(sku, snapshot, target, writes) {
       transact(() => {

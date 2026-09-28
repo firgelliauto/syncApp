@@ -44,6 +44,9 @@ test('staging records the main baseline and queues differences without inventory
       shared_qty: 13, main_qty: 13, child_qty: 15
     });
     assert.equal(state.initialStagedAt(), result.stagedAt);
+    state.blockSku('DIFFERENT', 10, 12, 'Both stores changed');
+    assert.equal(state.blockedCount(), 1);
+    assert.equal(state.getBlock('DIFFERENT').reason, 'Both stores changed');
     assert.throws(() => state.stagePrepared(planId), /already staged/);
   } finally { db.close(); }
 });

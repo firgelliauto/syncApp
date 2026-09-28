@@ -64,15 +64,36 @@ test('pausing leaves a planned write pending until resumed', async () => {
   state.close();
 });
 
-test('sales in both stores combine rather than overwrite one another', async () => {
+test('sales in both stores combine when each is observed before the next', async () => {
   const { state, actual, engine } = setup();
   actual.main = 9;
-  actual.child = 9;
   state.enqueue('sale-main', 'SKU');
+  await drain(engine);
+  actual.child = 8;
   state.enqueue('sale-child', 'SKU');
   await drain(engine);
   assert.deepEqual(actual, { main: 8, child: 8 });
   assert.equal(state.getSku('SKU').shared_qty, 8);
+  state.close();
+});
+
+test('two store decreases are treated as ambiguous and never double deducted', async () => {
+  const { state, actual, engine } = setup(433);
+  const events = [];
+  const guarded = createEngine({ state,
+    shops: { main: { side: 'main' }, child: { side: 'child' } },
+    locations: { main: 'm', child: 'c' },
+    readQuantity: async shop => actual[shop.side],
+    writeQuantity: async () => { throw new Error('Should not write ambiguous stock'); },
+    onLog: event => events.push(event) });
+  actual.main = 430;
+  actual.child = 430;
+  state.enqueue('main-sale', 'SKU');
+  state.enqueue('child-change', 'SKU');
+  await drain(guarded);
+  assert.deepEqual(actual, { main: 430, child: 430 });
+  assert.equal(state.hasWrite('SKU'), false);
+  assert.ok(events.some(event => event.type === 'ambiguous_change'));
   state.close();
 });
 

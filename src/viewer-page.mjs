@@ -65,7 +65,8 @@ const names={webhook:'Stock change received',change:'Stock change detected',writ
   scan_complete:'Backup scan completed',scan_error:'SKU check failed',retry:'Update will retry',
   stale:'Stock changed during update',negative_blocked:'Negative stock prevented',
   cloud_error:'App operation failed',worker_error:'Sync worker failed',auto_enroll_error:'New SKU enrollment failed',
-  sync_paused:'Sync paused',sync_resumed:'Sync enabled',catalog_staged:'Catalog staged'};
+  sync_paused:'Sync paused',sync_resumed:'Sync enabled',catalog_staged:'Catalog staged',
+  ambiguous_change:'Both stores changed; SKU blocked'};
 function node(tag,className,text){const e=document.createElement(tag);if(className)e.className=className;if(text!==undefined)e.textContent=String(text);return e}
 function line(e){const title=names[e.type]||e.type;const sku=e.sku?' · '+e.sku:'';const side=e.side==='main'?'Main store':e.side==='child'?'Child store':'';
   const quantity=e.from_qty!==null&&e.to_qty!==null?' · '+e.from_qty+' → '+e.to_qty:'';
@@ -97,12 +98,13 @@ function render(){if(!data)return;const s=data.status,c=data.control;el('live').
   el('updated').textContent='Updated '+new Date().toLocaleTimeString();const banner=el('banner');banner.className='banner '+(s.active?'good':'');
   banner.textContent=s.active?'Live syncing is on. Inventory changes can update the other store.':'Sync is off. Shopify inventory changes are being logged but are not copied between stores.';
   el('controlState').textContent=s.active?'ON':'OFF';el('controlState').className='mode '+(s.active?'on':'off');
-  el('controlMessage').textContent=s.active?'Both stores are syncing. Pause stops new inventory updates.':c.rolloutReady?'Sync is paused. Enable to check current stock and process pending changes.':'Sync is off while the full rollout is being prepared.';
-  el('controlHint').textContent=!c.canManage?'Only the approved main-store account can change this setting.':!c.rolloutReady?'Enable stays locked until full rollout is approved and the safety switches are on.':'Webhook activity continues while syncing is paused.';
-  const controlButton=el('controlButton');controlButton.hidden=!c.canManage;controlButton.textContent=s.active?'Pause syncing':'Enable syncing';controlButton.className='controlbutton '+(s.active?'pause':'enable');controlButton.disabled=!c.rolloutReady;
+  el('controlMessage').textContent=s.active?'Both stores are syncing. Pause stops new inventory updates.':c.blockedSkus?'Sync is paused. '+c.blockedSkus+' SKU(s) need review before enabling.':c.rolloutReady?'Sync is paused. Enable to check current stock and process pending changes.':'Sync is off while the full rollout is being prepared.';
+  el('controlHint').textContent=!c.canManage?'Only the approved main-store account can change this setting.':c.blockedSkus?'Both stores changed for one or more SKUs; the app will not guess whether these are separate sales.':!c.rolloutReady?'Enable stays locked until full rollout is approved and the safety switches are on.':'Webhook activity continues while syncing is paused.';
+  const controlButton=el('controlButton');controlButton.hidden=!c.canManage;controlButton.textContent=s.active?'Pause syncing':'Enable syncing';controlButton.className='controlbutton '+(s.active?'pause':'enable');controlButton.disabled=!c.rolloutReady||Boolean(c.blockedSkus);
   const activeRetries=data.pendingWrites.filter(w=>w.attempts>0);
-  const problems=[...activeRetries.map(w=>({at:new Date(w.next_at).toISOString(),level:'error',type:'retry',sku:w.sku,side:w.side,from_qty:w.from_qty,to_qty:w.to_qty,message:w.last_error||'Pending retry'})),...data.problems];
-  el('problemCount').textContent=activeRetries.length+' active retries';renderRows('problems',problems.slice(0,5),'No recent warnings or failed updates.');
+  const blocks=(data.blockedSkus||[]).map(b=>({at:b.blocked_at,level:'error',type:'ambiguous_change',sku:b.sku,message:b.reason}));
+  const problems=[...blocks,...activeRetries.map(w=>({at:new Date(w.next_at).toISOString(),level:'error',type:'retry',sku:w.sku,side:w.side,from_qty:w.from_qty,to_qty:w.to_qty,message:w.last_error||'Pending retry'})),...data.problems];
+  el('problemCount').textContent=blocks.length+' blocked · '+activeRetries.length+' active retries';renderRows('problems',problems.slice(0,5),'No recent warnings or failed updates.');
   const q=el('search').value.trim().toLowerCase();let rows=data.activity.filter(e=>!q||e.sku?.toLowerCase().includes(q));
   if(filter==='problems')rows=rows.filter(e=>e.level!=='info');if(filter==='changes')rows=rows.filter(e=>['change','write','bootstrap','auto_enroll'].includes(e.type));
   renderRows('activity',rows,'No events match this view.');renderQueue();renderPlan();}
