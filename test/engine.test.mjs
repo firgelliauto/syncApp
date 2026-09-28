@@ -41,6 +41,29 @@ test('primary sale copies the delta; echo webhook causes no second decrement', a
   state.close();
 });
 
+test('pausing leaves a planned write pending until resumed', async () => {
+  const state = openState(':memory:');
+  state.seed('SKU', 'main-item', 'child-item', 10);
+  state.enqueue('main-sale', 'SKU');
+  const actual = { main: 9, child: 10 };
+  let allowed = true;
+  let writes = 0;
+  const engine = createEngine({ state, shops: { main: { side: 'main' }, child: { side: 'child' } },
+    locations: { main: 'm', child: 'c' }, canProcess: () => allowed,
+    readQuantity: async shop => actual[shop.side],
+    writeQuantity: async (shop, write) => { writes++; actual[shop.side] = write.to; },
+    onLog: () => {} });
+  await engine.tick();
+  allowed = false;
+  assert.equal(await engine.tick(), false);
+  assert.equal(writes, 0);
+  assert.deepEqual(actual, { main: 9, child: 10 });
+  allowed = true;
+  await drain(engine);
+  assert.deepEqual(actual, { main: 9, child: 9 });
+  state.close();
+});
+
 test('sales in both stores combine rather than overwrite one another', async () => {
   const { state, actual, engine } = setup();
   actual.main = 9;

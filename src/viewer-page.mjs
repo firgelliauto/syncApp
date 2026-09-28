@@ -19,6 +19,14 @@ h1{font-size:30px;letter-spacing:-.04em;margin:6px 0 8px}h2{font-size:17px;lette
 .value.good{color:#0d7658}.value.off{color:#9b5a11}.value.bad{color:#b42318}
 .banner{border-radius:11px;padding:13px 16px;margin-bottom:22px;font-size:13px;line-height:1.5;background:#fff5e7;border:1px solid #f0d5ad;color:#734911}
 .banner.good{background:#eaf8f2;border-color:#b7e4cf;color:#126044}
+.controlpanel{display:flex;align-items:center;justify-content:space-between;gap:24px;margin-bottom:22px;padding:20px 22px}
+.controlcopy{min-width:0}.controltitle{display:flex;align-items:center;gap:11px;margin-bottom:7px}.controlpanel p{font-size:13px}
+.controlpanel small{display:block;color:#71808a;font-size:11px;line-height:1.45;margin-top:7px}
+.mode{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:5px 10px;font-size:11px;font-weight:800;letter-spacing:.05em}
+.mode::before{content:'';width:7px;height:7px;border-radius:50%;background:currentColor}.mode.on{color:#087450;background:#e6f6ef}.mode.off{color:#a32e26;background:#fdecea}
+.controlbutton{border:0;border-radius:9px;padding:11px 16px;min-width:155px;font:inherit;font-size:13px;font-weight:750;color:#fff;cursor:pointer;white-space:nowrap}
+.controlbutton.enable{background:#087f5b}.controlbutton.enable:hover{background:#076a4d}.controlbutton.pause{background:#b42318}.controlbutton.pause:hover{background:#971c13}
+.controlbutton:disabled{background:#d7dde0;color:#68747c;cursor:not-allowed}.controlbutton[hidden]{display:none}
 .two{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:18px}.panel{padding:22px}.panelhead{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:15px}.muted{font-size:12px;color:#71808a}
 .facts{display:grid;grid-template-columns:1fr 1fr;gap:12px}.fact{border-top:1px solid #eff1f2;padding-top:10px}.fact b{display:block;font-size:13px;margin-top:3px}.fact span{font-size:11px;color:#6b7580}
 .toolbar{display:flex;gap:10px;align-items:center;margin:14px 0}.search{width:220px;max-width:100%;border:1px solid #cdd5d9;border-radius:8px;padding:9px 11px;font:inherit;font-size:13px}.tabs{display:flex;gap:5px}.tab{border:0;border-radius:7px;padding:9px 11px;background:transparent;color:#65717b;font:inherit;font-size:12px;font-weight:700;cursor:pointer}.tab.active{background:#e7f2ef;color:#08634a}
@@ -27,9 +35,9 @@ h1{font-size:30px;letter-spacing:-.04em;margin:6px 0 8px}h2{font-size:17px;lette
 .entry strong{display:block;font-size:13px;line-height:1.4}.entry small{display:block;color:#65717b;font-size:12px;margin-top:4px;line-height:1.45}.time{font-size:11px;color:#7d8790;white-space:nowrap}
 .empty{padding:28px 0;text-align:center;color:#687681;font-size:13px}.errorbox{background:#fdecea;color:#a42920;border:1px solid #f1c5bf;border-radius:9px;padding:13px 15px;font-size:13px}
 @media(max-width:860px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.two{grid-template-columns:1fr}}
-@media(max-width:550px){main{padding:22px 16px 60px}.grid{gap:8px}.card{padding:14px}.card .value{font-size:23px}.header{align-items:center}.entry{grid-template-columns:1fr auto}.entry .badge{grid-column:1/-1;width:max-content}.toolbar{flex-wrap:wrap}}
+@media(max-width:550px){main{padding:22px 16px 60px}.grid{gap:8px}.card{padding:14px}.card .value{font-size:23px}.header{align-items:center}.entry{grid-template-columns:1fr auto}.entry .badge{grid-column:1/-1;width:max-content}.toolbar{flex-wrap:wrap}.controlpanel{align-items:stretch;flex-direction:column;gap:15px}.controlbutton{width:100%}}
 </style></head><body><main>
-<div class="header"><div><div class="eyebrow">Firgelli • inventory operations</div><h1>Inventory sync</h1><p>Read-only view of the two-store stock connection.</p></div><button class="refresh" id="refresh">Refresh</button></div>
+<div class="header"><div><div class="eyebrow">Firgelli • inventory operations</div><h1>Inventory sync</h1><p>Status and activity for the two-store stock connection.</p></div><button class="refresh" id="refresh">Refresh</button></div>
 <div id="banner" class="banner">Loading current status…</div>
 <div class="grid">
 <div class="card"><div class="label">Live syncing</div><div class="value" id="live">—</div><div class="hint">Both stores</div></div>
@@ -37,6 +45,7 @@ h1{font-size:30px;letter-spacing:-.04em;margin:6px 0 8px}h2{font-size:17px;lette
 <div class="card"><div class="label">Pending work</div><div class="value" id="pending">—</div><div class="hint">Changes and retries</div></div>
 <div class="card"><div class="label">New SKU candidates</div><div class="value" id="new">—</div><div class="hint">Found in daily discovery</div></div>
 </div>
+<section class="panel controlpanel" aria-labelledby="controlHeading"><div class="controlcopy"><div class="controltitle"><h2 id="controlHeading">Sync control</h2><span class="mode off" id="controlState">OFF</span></div><p id="controlMessage">Checking control status…</p><small id="controlHint"></small></div><button id="controlButton" class="controlbutton enable" type="button" disabled hidden>Enable syncing</button></section>
 <div class="two"><section class="panel"><div class="panelhead"><h2>Connection details</h2></div><div class="facts">
 <div class="fact"><span>Main store</span><b>Firgelli Automation · 1350 Slater Road</b></div>
 <div class="fact"><span>Child store</span><b>Firgelli · Warehouse</b></div>
@@ -52,7 +61,8 @@ const names={webhook:'Stock change received',change:'Stock change detected',writ
   bootstrap:'SKU initialized',auto_enroll:'New SKU enrolled',discovery:'Daily SKU check',
   scan_complete:'Backup scan completed',scan_error:'SKU check failed',retry:'Update will retry',
   stale:'Stock changed during update',negative_blocked:'Negative stock prevented',
-  cloud_error:'App operation failed',worker_error:'Sync worker failed',auto_enroll_error:'New SKU enrollment failed'};
+  cloud_error:'App operation failed',worker_error:'Sync worker failed',auto_enroll_error:'New SKU enrollment failed',
+  sync_paused:'Sync paused',sync_resumed:'Sync enabled'};
 function node(tag,className,text){const e=document.createElement(tag);if(className)e.className=className;if(text!==undefined)e.textContent=String(text);return e}
 function line(e){const title=names[e.type]||e.type;const sku=e.sku?' · '+e.sku:'';const side=e.side==='main'?'Main store':e.side==='child'?'Child store':'';
   const quantity=e.from_qty!==null&&e.to_qty!==null?' · '+e.from_qty+' → '+e.to_qty:'';
@@ -60,11 +70,15 @@ function line(e){const title=names[e.type]||e.type;const sku=e.sku?' · '+e.sku:
 function renderRows(target,rows,empty){const box=el(target);box.replaceChildren();if(!rows.length){box.append(node('div','empty',empty));return}
   for(const e of rows){const row=node('div','entry');row.append(node('span','badge '+(e.level==='error'?'error':e.level==='warning'?'warning':''),e.level));
     const body=node('div');const info=line(e);body.append(node('strong','',info.title));if(info.detail)body.append(node('small','',info.detail));row.append(body,node('span','time',date(e.at)));box.append(row)}}
-function render(){if(!data)return;const s=data.status;el('live').textContent=s.syncEnabled&&s.inventoryWritesEnabled?'On':'Paused';el('live').className='value '+(s.syncEnabled&&s.inventoryWritesEnabled?'good':'off');
+function render(){if(!data)return;const s=data.status,c=data.control;el('live').textContent=s.active?'On':'Off';el('live').className='value '+(s.active?'good':'bad');
   el('tracked').textContent=s.initializedSkus;el('pending').textContent=s.pendingJobs+s.pendingWrites;el('pending').className='value '+(s.pendingJobs+s.pendingWrites?'bad':'good');
   el('new').textContent=s.discovery.candidateCount;el('discovery').textContent=date(s.discovery.lastScanAt);el('scan').textContent=date(data.lastCompletedScan);
-  el('updated').textContent='Updated '+new Date().toLocaleTimeString();const banner=el('banner');banner.className='banner '+(s.syncEnabled&&s.inventoryWritesEnabled?'good':'');
-  banner.textContent=s.syncEnabled&&s.inventoryWritesEnabled?'Live syncing is on. Inventory changes can update the other store.':'Sync is paused. Shopify inventory changes are not being copied between stores.';
+  el('updated').textContent='Updated '+new Date().toLocaleTimeString();const banner=el('banner');banner.className='banner '+(s.active?'good':'');
+  banner.textContent=s.active?'Live syncing is on. Inventory changes can update the other store.':'Sync is off. Shopify inventory changes are being logged but are not copied between stores.';
+  el('controlState').textContent=s.active?'ON':'OFF';el('controlState').className='mode '+(s.active?'on':'off');
+  el('controlMessage').textContent=s.active?'Both stores are syncing. Pause stops new inventory updates.':c.rolloutReady?'Sync is paused. Enable to check current stock and process pending changes.':'Sync is off while the full rollout is being prepared.';
+  el('controlHint').textContent=!c.canManage?'Only the approved main-store account can change this setting.':!c.rolloutReady?'Enable stays locked until full rollout is approved and the safety switches are on.':'Webhook activity continues while syncing is paused.';
+  const controlButton=el('controlButton');controlButton.hidden=!c.canManage;controlButton.textContent=s.active?'Pause syncing':'Enable syncing';controlButton.className='controlbutton '+(s.active?'pause':'enable');controlButton.disabled=!c.rolloutReady;
   const activeRetries=data.pendingWrites.filter(w=>w.attempts>0);
   const problems=[...activeRetries.map(w=>({at:new Date(w.next_at).toISOString(),level:'error',type:'retry',sku:w.sku,side:w.side,from_qty:w.from_qty,to_qty:w.to_qty,message:w.last_error||'Pending retry'})),...data.problems];
   el('problemCount').textContent=activeRetries.length+' active retries';renderRows('problems',problems.slice(0,5),'No recent warnings or failed updates.');
@@ -81,6 +95,12 @@ async function load(){if(loading)return;loading=true;const btn=el('refresh');btn
     }else{el('banner').className='errorbox';el('banner').textContent=err.message}}
   finally{loading=false;btn.disabled=false}}
 el('refresh').addEventListener('click',load);el('search').addEventListener('input',render);
+el('controlButton').addEventListener('click',async()=>{if(!data?.control?.canManage||!data.control.rolloutReady)return;
+  const action=data.control.active?'pause':'resume',button=el('controlButton');button.disabled=true;button.textContent=action==='pause'?'Pausing…':'Enabling…';
+  try{const request=async()=>fetch('/viewer/control',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+await window.shopify.idToken()},body:JSON.stringify({action}),cache:'no-store'});
+    let res=await request();if(res.status===401)res=await request();if(!res.ok){const body=await res.json().catch(()=>({}));throw Error(body.error||'Could not change sync state')}
+    const result=await res.json();data.control=result.control;data.status.active=result.control.active;render();await load()
+  }catch(err){el('controlMessage').textContent=err.message;button.disabled=false;button.textContent=action==='pause'?'Pause syncing':'Enable syncing'}});
 for(const tab of document.querySelectorAll('.tab'))tab.addEventListener('click',()=>{filter=tab.dataset.filter;for(const t of document.querySelectorAll('.tab'))t.classList.toggle('active',t===tab);render()});
 load();setInterval(load,45000);
 </script></body></html>`;

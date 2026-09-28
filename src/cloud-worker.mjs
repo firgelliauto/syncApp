@@ -10,6 +10,7 @@ import { webhookSku } from './webhook.mjs';
 import { verifyViewerToken } from './viewer-auth.mjs';
 import { viewerPage } from './viewer-page.mjs';
 import { validWebhook } from './webhook-auth.mjs';
+import { canManageSync, rolloutReady, syncActive } from './sync-control.mjs';
 
 const INSTANCE = 'firgelli-inventory-sync';
 const json = (value, status = 200) => Response.json(value, { status });
@@ -32,9 +33,19 @@ function locations(env) {
   return { main: env.MAIN_LOCATION_ID, child: env.CHILD_LOCATION_ID };
 }
 
-function autoEnrollmentEnabled(env) {
-  return env.SYNC_ENABLED === 'true' && env.ALLOW_INVENTORY_WRITES === 'true' &&
-    env.FULL_ROLLOUT_COMPLETE === 'true' && env.AUTO_ENROLL_NEW_SKUS === 'true';
+function viewerStores(env) {
+  return [
+    { side: 'main', shop: env.MAIN_SHOP, clientId: env.MAIN_CLIENT_ID,
+      clientSecret: env.MAIN_CLIENT_SECRET },
+    { side: 'child', shop: env.CHILD_SHOP, clientId: env.CHILD_CLIENT_ID,
+      clientSecret: env.CHILD_CLIENT_SECRET }
+  ];
+}
+
+function invalidSession() {
+  return Response.json({ error: 'Invalid Shopify session' }, { status: 401,
+    headers: { 'X-Shopify-Retry-Invalid-Session-Request': '1',
+      'Cache-Control': 'no-store' } });
 }
 
 function sameToken(actual, expected) {
@@ -60,24 +71,37 @@ export default {
       } });
     }
     if (request.method === 'GET' && url.pathname === '/health') {
+      const state = await binding(env).fetch('https://internal/status').then(response => response.json());
       return json({ status: 'ok', syncEnabled: env.SYNC_ENABLED === 'true',
         inventoryWritesEnabled: env.ALLOW_INVENTORY_WRITES === 'true',
-        autoEnrollmentEnabled: autoEnrollmentEnabled(env) });
+        rolloutReady: state.rolloutReady, operatorPaused: state.operatorPaused,
+        active: state.active, autoEnrollmentEnabled: state.autoEnrollmentEnabled });
     }
     const stub = binding(env);
-    if (request.method === 'GET' && url.pathname === '/viewer/overview') {
+    if ((request.method === 'GET' && url.pathname === '/viewer/overview') ||
+        (request.method === 'POST' && url.pathname === '/viewer/control')) {
       const authorization = request.headers.get('authorization') ?? '';
       const user = authorization.startsWith('Bearer ') ?
-        await verifyViewerToken(authorization.slice(7), [
-          { side: 'main', shop: env.MAIN_SHOP, clientId: env.MAIN_CLIENT_ID,
-            clientSecret: env.MAIN_CLIENT_SECRET },
-          { side: 'child', shop: env.CHILD_SHOP, clientId: env.CHILD_CLIENT_ID,
-            clientSecret: env.CHILD_CLIENT_SECRET }
-        ], undefined, reason => console.warn('Viewer authorization rejected:', reason)) : null;
-      if (!user) return Response.json({ error: 'Invalid Shopify session' }, { status: 401,
-        headers: { 'X-Shopify-Retry-Invalid-Session-Request': '1',
-          'Cache-Control': 'no-store' } });
-      const result = await stub.fetch('https://internal/overview');
+        await verifyViewerToken(authorization.slice(7), viewerStores(env), undefined,
+          reason => console.warn('Viewer authorization rejected:', reason)) : null;
+      if (!user) return invalidSession();
+      const canManage = canManageSync(user, env);
+      if (url.pathname === '/viewer/control' && !canManage) return json({ error: 'Not allowed' }, 403);
+      let result;
+      if (url.pathname === '/viewer/control') {
+        if (Number(request.headers.get('content-length') ?? 0) > 1000) return json({ error: 'Request too large' }, 413);
+        let input;
+        try {
+          const body = await request.text();
+          if (body.length > 1000) return json({ error: 'Request too large' }, 413);
+          input = JSON.parse(body);
+        } catch { return json({ error: 'Invalid JSON' }, 400); }
+        if (!['pause', 'resume'].includes(input?.action)) return json({ error: 'Invalid action' }, 400);
+        result = await stub.fetch(new Request('https://internal/control', { method: 'POST',
+          body: JSON.stringify({ action: input.action }) }));
+      } else {
+        result = await stub.fetch(`https://internal/overview?canManage=${canManage ? '1' : '0'}`);
+      }
       const response = new Response(result.body, result);
       response.headers.set('Cache-Control', 'no-store');
       return response;
@@ -132,7 +156,8 @@ export class InventorySyncState extends DurableObject {
     this.shops = shops(env);
     this.locations = locations(env);
     this.engine = createEngine({ state: this.state, shops: this.shops,
-      locations: this.locations, onLog: event => this.logActivity(event) });
+      locations: this.locations, onLog: event => this.logActivity(event),
+      canProcess: () => this.live() });
   }
 
   logActivity(event) {
@@ -144,12 +169,15 @@ export class InventorySyncState extends DurableObject {
   }
 
   async fetch(request) {
-    const path = new URL(request.url).pathname;
+    const url = new URL(request.url);
+    const path = url.pathname;
     try {
       if (path === '/status') return json({ initializedSkus: this.state.skuCount(),
         preparedSkus: this.state.preparedCount(), pendingJobs: this.state.pendingCount(),
         pendingWrites: this.state.writeCount(), syncEnabled: this.env.SYNC_ENABLED === 'true',
         inventoryWritesEnabled: this.env.ALLOW_INVENTORY_WRITES === 'true',
+        rolloutReady: rolloutReady(this.env), operatorPaused: this.state.isPaused(),
+        active: this.live(),
         autoEnrollmentEnabled: this.autoEnrollmentEnabled(),
         discovery: this.state.discoveryStatus() });
       if (path === '/overview' && request.method === 'GET') {
@@ -158,12 +186,32 @@ export class InventorySyncState extends DurableObject {
           initializedSkus: this.state.skuCount(), pendingJobs: this.state.pendingCount(),
           pendingWrites: this.state.writeCount(), syncEnabled: this.env.SYNC_ENABLED === 'true',
           inventoryWritesEnabled: this.env.ALLOW_INVENTORY_WRITES === 'true',
+          active: this.live(),
           discovery: { lastScanAt: discovery.lastScanAt,
             candidateCount: discovery.candidates.length }
-        }, lastCompletedScan: this.state.lastCompletedScan(),
+        }, control: this.controlStatus(url.searchParams.get('canManage') === '1'),
+        lastCompletedScan: this.state.lastCompletedScan(),
         pendingWrites: this.state.pendingWrites(),
         problems: this.state.recentProblems(20),
         activity: this.state.recentActivity(150) });
+      }
+      if (path === '/control' && request.method === 'POST') {
+        const { action } = await request.json();
+        if (action === 'resume') {
+          if (!rolloutReady(this.env)) return json({ error: 'Full rollout is not enabled' }, 409);
+          if (this.state.isPaused()) {
+            this.state.setPaused(false);
+            this.state.requestReconcile();
+            this.logActivity({ type: 'sync_resumed', message: 'Sync enabled from Shopify admin' });
+            await this.scheduleSoon();
+          }
+        } else if (action === 'pause') {
+          if (!this.state.isPaused()) {
+            this.state.setPaused(true);
+            this.logActivity({ type: 'sync_paused', message: 'Sync paused from Shopify admin' });
+          }
+        } else return json({ error: 'Invalid action' }, 400);
+        return json({ control: this.controlStatus(true) });
       }
       if (path === '/webhook' && request.method === 'POST') {
         const { side, deliveryId, payload } = await request.json();
@@ -175,7 +223,7 @@ export class InventorySyncState extends DurableObject {
               message: this.live() ? 'Shopify reported an inventory change' :
                 'Shopify reported a change while syncing is paused' });
           }
-          if (this.live()) this.scheduleSoon();
+          if (this.live()) await this.scheduleSoon();
         }
         return json({ accepted: true });
       }
@@ -201,24 +249,32 @@ export class InventorySyncState extends DurableObject {
   }
 
   live() {
-    return this.env.SYNC_ENABLED === 'true' && this.env.ALLOW_INVENTORY_WRITES === 'true';
+    return syncActive(this.env, this.state.isPaused());
   }
 
   autoEnrollmentEnabled() {
-    return autoEnrollmentEnabled(this.env);
+    return this.live() && this.env.AUTO_ENROLL_NEW_SKUS === 'true';
   }
 
-  scheduleSoon() {
-    const current = this.ctx.storage.getAlarm();
+  controlStatus(canManage = false) {
+    return { active: this.live(), paused: this.state.isPaused(),
+      rolloutReady: rolloutReady(this.env), canManage };
+  }
+
+  async scheduleSoon() {
+    const current = await this.ctx.storage.getAlarm();
     const soon = Date.now() + 1000;
-    if (current === null || current > soon) this.ctx.storage.setAlarm(soon);
+    if (current === null || current > soon) await this.ctx.storage.setAlarm(soon);
   }
 
   async alarm() {
     if (!this.live()) return;
     let failed = false;
     try {
-      for (let i = 0; i < 20 && await this.engine.tick(); i++);
+      if (this.state.reconcileRequested() && await this.reconcile()) {
+        this.state.clearReconcileRequest();
+      }
+      for (let i = 0; i < 20 && this.live() && await this.engine.tick(); i++);
       this.state.pruneJobs();
     } catch (error) {
       failed = true;
@@ -226,9 +282,9 @@ export class InventorySyncState extends DurableObject {
     } finally {
       const nextWrite = this.state.nextWriteAt();
       const readyJob = this.state.nextJob();
-      if (readyJob || nextWrite !== null) {
-        this.ctx.storage.setAlarm(readyJob ? Date.now() + (failed ? 5 * 60_000 : 1000)
-          : Math.max(Date.now() + 1000, nextWrite));
+      if (this.live() && (this.state.reconcileRequested() || readyJob || nextWrite !== null)) {
+        await this.ctx.storage.setAlarm(this.state.reconcileRequested() || readyJob ?
+          Date.now() + (failed ? 5 * 60_000 : 1000) : Math.max(Date.now() + 1000, nextWrite));
       }
     }
   }
@@ -296,6 +352,7 @@ export class InventorySyncState extends DurableObject {
     const enrolled = [];
     if (this.autoEnrollmentEnabled()) {
       for (const row of candidates.slice(0, 5)) {
+        if (!this.autoEnrollmentEnabled()) break;
         try {
           const [mainQuantity, childQuantity] = await Promise.all([
             getQuantity(this.shops.main, row.mainItem, this.locations.main, row.sku),
@@ -303,6 +360,7 @@ export class InventorySyncState extends DurableObject {
           ]);
           if (!Number.isInteger(mainQuantity) || !Number.isInteger(childQuantity) ||
               mainQuantity < 0 || childQuantity < 0) continue;
+          if (!this.autoEnrollmentEnabled()) break;
           if (mainQuantity !== childQuantity) await setQuantity(this.shops.child, {
             inventoryItemId: row.childItem, locationId: this.locations.child,
             from: childQuantity, to: mainQuantity, key: randomUUID()
@@ -312,7 +370,7 @@ export class InventorySyncState extends DurableObject {
               from: childQuantity, to: mainQuantity,
               message: 'New SKU initialized from the main store' });
             this.state.enqueue(randomUUID(), row.sku);
-            this.scheduleSoon();
+            await this.scheduleSoon();
             enrolled.push(row.sku);
           }
         } catch (error) {
@@ -329,10 +387,12 @@ export class InventorySyncState extends DurableObject {
   }
 
   async reconcile() {
+    if (!this.live()) return false;
     const [main, child] = await Promise.all([
       listVariants(this.shops.main, this.locations.main),
       listVariants(this.shops.child, this.locations.child)
     ]);
+    if (!this.live()) return false;
     const byItem = {
       main: new Map(main.map(v => [v.inventoryItemId, v.quantity])),
       child: new Map(child.map(v => [v.inventoryItemId, v.quantity]))
@@ -344,6 +404,7 @@ export class InventorySyncState extends DurableObject {
       }
     }
     this.state.markCompletedScan();
-    if (this.state.pendingCount()) this.scheduleSoon();
+    if (this.state.pendingCount()) await this.scheduleSoon();
+    return true;
   }
 }

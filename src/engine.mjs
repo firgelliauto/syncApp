@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { getQuantity, setQuantity } from './shopify.mjs';
 
 export function createEngine({ state, shops, locations, onLog = console.log,
-  readQuantity = getQuantity, writeQuantity = setQuantity }) {
+  readQuantity = getQuantity, writeQuantity = setQuantity, canProcess = () => true }) {
   async function scanSku(sku) {
     const row = state.getSku(sku);
     if (!row || state.hasWrite(sku)) return;
@@ -31,6 +31,7 @@ export function createEngine({ state, shops, locations, onLog = console.log,
   }
 
   async function processWrite(write) {
+    if (!canProcess()) return false;
     const row = state.getSku(write.sku);
     const side = write.side;
     try {
@@ -54,8 +55,9 @@ export function createEngine({ state, shops, locations, onLog = console.log,
   }
 
   async function tick() {
+    if (!canProcess()) return false;
     const write = state.nextWrite();
-    if (write) { await processWrite(write); return true; }
+    if (write) return await processWrite(write) !== false;
     const job = state.nextJob();
     if (!job) return false;
     try { await scanSku(job.sku); }

@@ -153,6 +153,13 @@ export function openCloudState(storage) {
     recentActivity: (limit = 100) => all('SELECT * FROM activity ORDER BY id DESC LIMIT ?', limit),
     recentProblems: (limit = 50) => all(`SELECT * FROM activity WHERE level IN ('warning', 'error')
       ORDER BY id DESC LIMIT ?`, limit),
+    isPaused: () => one("SELECT value FROM operations WHERE key = 'operator_paused'")?.value !== 'false',
+    setPaused: paused => sql.exec(`INSERT OR REPLACE INTO operations (key, value)
+      VALUES ('operator_paused', ?)`, paused ? 'true' : 'false'),
+    reconcileRequested: () => one("SELECT value FROM operations WHERE key = 'reconcile_requested'")?.value === 'true',
+    requestReconcile: () => sql.exec(`INSERT OR REPLACE INTO operations (key, value)
+      VALUES ('reconcile_requested', 'true')`),
+    clearReconcileRequest: () => sql.exec("DELETE FROM operations WHERE key = 'reconcile_requested'"),
     markCompletedScan: () => sql.exec(`INSERT OR REPLACE INTO operations (key, value)
       VALUES ('last_completed_scan', ?)`, new Date().toISOString()),
     lastCompletedScan: () => one(`SELECT value FROM operations
