@@ -46,7 +46,7 @@ h1{font-size:30px;letter-spacing:-.04em;margin:6px 0 8px}h2{font-size:17px;lette
 <section class="panel"><div class="panelhead"><div><h2>Activity history</h2><p class="muted">Recent events recorded by this app. Times shown in your local time zone.</p></div><span class="muted" id="updated"></span></div>
 <div class="toolbar"><input id="search" class="search" type="search" placeholder="Filter by SKU" aria-label="Filter by SKU"><div class="tabs"><button class="tab active" data-filter="all">All</button><button class="tab" data-filter="problems">Warnings & errors</button><button class="tab" data-filter="changes">Stock changes</button></div></div><div id="activity" class="list"></div></section>
 </main><script nonce="${nonce}">
-const el=id=>document.getElementById(id);let data=null,filter='all';
+const el=id=>document.getElementById(id);let data=null,filter='all',loading=false,retryTimer=null,sessionFailures=0;
 const date=value=>value?new Date(value).toLocaleString(): 'Not yet recorded';
 const names={webhook:'Stock change received',change:'Stock change detected',write:'Quantity updated',
   bootstrap:'SKU initialized',auto_enroll:'New SKU enrolled',discovery:'Daily SKU check',
@@ -71,13 +71,17 @@ function render(){if(!data)return;const s=data.status;el('live').textContent=s.s
   const q=el('search').value.trim().toLowerCase();let rows=data.activity.filter(e=>!q||e.sku?.toLowerCase().includes(q));
   if(filter==='problems')rows=rows.filter(e=>e.level!=='info');if(filter==='changes')rows=rows.filter(e=>['change','write','bootstrap','auto_enroll'].includes(e.type));
   renderRows('activity',rows,'No events match this view.');}
-async function load(){const btn=el('refresh');btn.disabled=true;try{if(!window.shopify?.idToken)throw Error('Open this page from the installed app in Shopify admin.');
+async function load(){if(loading)return;loading=true;const btn=el('refresh');btn.disabled=true;try{if(!window.shopify?.idToken)throw Error('Open this page from the installed app in Shopify admin.');
   const request=async()=>fetch('/viewer/overview',{headers:{Authorization:'Bearer '+await window.shopify.idToken()},cache:'no-store'});
   let res=await request();if(res.status===401)res=await request();
-  if(!res.ok)throw Error(res.status===401?'Shopify session expired. Reopen the app from Shopify admin.':'Status is temporarily unavailable ('+res.status+').');
-  data=await res.json();render()}catch(err){el('banner').className='errorbox';el('banner').textContent=err.message}finally{btn.disabled=false}}
+  if(!res.ok){const err=Error(res.status===401?'Shopify session could not be refreshed. Reopen the app from Shopify admin.':'Status is temporarily unavailable ('+res.status+').');err.session=res.status===401;throw err}
+  data=await res.json();sessionFailures=0;if(retryTimer){clearTimeout(retryTimer);retryTimer=null}render()
+  }catch(err){if(err.session&&++sessionFailures<6){if(data)el('updated').textContent='Refreshing Shopify session…';else{el('banner').className='banner';el('banner').textContent='Refreshing Shopify session…'}
+      if(!retryTimer)retryTimer=setTimeout(()=>{retryTimer=null;load()},10000)
+    }else{el('banner').className='errorbox';el('banner').textContent=err.message}}
+  finally{loading=false;btn.disabled=false}}
 el('refresh').addEventListener('click',load);el('search').addEventListener('input',render);
 for(const tab of document.querySelectorAll('.tab'))tab.addEventListener('click',()=>{filter=tab.dataset.filter;for(const t of document.querySelectorAll('.tab'))t.classList.toggle('active',t===tab);render()});
-load();setInterval(load,60000);
+load();setInterval(load,45000);
 </script></body></html>`;
 }
