@@ -74,7 +74,9 @@ export default {
           { side: 'child', shop: env.CHILD_SHOP, clientId: env.CHILD_CLIENT_ID,
             clientSecret: env.CHILD_CLIENT_SECRET, previousSecrets: [env.WEBHOOK_OLD_CLIENT_SECRET] }
         ], undefined, reason => console.warn('Viewer authorization rejected:', reason)) : null;
-      if (!user) return json({ error: 'Unauthorized' }, 401);
+      if (!user) return Response.json({ error: 'Invalid Shopify session' }, { status: 401,
+        headers: { 'X-Shopify-Retry-Invalid-Session-Request': '1',
+          'Cache-Control': 'no-store' } });
       const result = await stub.fetch('https://internal/overview');
       const response = new Response(result.body, result);
       response.headers.set('Cache-Control', 'no-store');

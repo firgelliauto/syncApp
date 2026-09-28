@@ -72,8 +72,9 @@ function render(){if(!data)return;const s=data.status;el('live').textContent=s.s
   if(filter==='problems')rows=rows.filter(e=>e.level!=='info');if(filter==='changes')rows=rows.filter(e=>['change','write','bootstrap','auto_enroll'].includes(e.type));
   renderRows('activity',rows,'No events match this view.');}
 async function load(){const btn=el('refresh');btn.disabled=true;try{if(!window.shopify?.idToken)throw Error('Open this page from the installed app in Shopify admin.');
-  const token=await window.shopify.idToken();const res=await fetch('/viewer/overview',{headers:{Authorization:'Bearer '+token},cache:'no-store'});
-  if(!res.ok)throw Error(res.status===401?'Shopify session could not be verified. Check the app client secret in Cloudflare.':'Status is temporarily unavailable ('+res.status+').');
+  const request=async()=>fetch('/viewer/overview',{headers:{Authorization:'Bearer '+await window.shopify.idToken()},cache:'no-store'});
+  let res=await request();if(res.status===401)res=await request();
+  if(!res.ok)throw Error(res.status===401?'Shopify session expired. Reopen the app from Shopify admin.':'Status is temporarily unavailable ('+res.status+').');
   data=await res.json();render()}catch(err){el('banner').className='errorbox';el('banner').textContent=err.message}finally{btn.disabled=false}}
 el('refresh').addEventListener('click',load);el('search').addEventListener('input',render);
 for(const tab of document.querySelectorAll('.tab'))tab.addEventListener('click',()=>{filter=tab.dataset.filter;for(const t of document.querySelectorAll('.tab'))t.classList.toggle('active',t===tab);render()});
