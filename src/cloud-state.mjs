@@ -16,6 +16,13 @@ export function openCloudState(storage) {
     `CREATE TABLE IF NOT EXISTS prepared (
       sku TEXT PRIMARY KEY, main_item TEXT NOT NULL, child_item TEXT NOT NULL,
       main_qty INTEGER NOT NULL, child_qty INTEGER NOT NULL, created_at TEXT NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS discovery_meta (
+      key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS observed_main_skus (
+      sku TEXT PRIMARY KEY, is_new INTEGER NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS discovered_skus (
+      sku TEXT PRIMARY KEY, main_item TEXT NOT NULL, child_item TEXT NOT NULL,
+      main_qty INTEGER NOT NULL, child_qty INTEGER NOT NULL, discovered_at TEXT NOT NULL)`,
     'CREATE INDEX IF NOT EXISTS jobs_pending ON jobs(done_at, created_at)',
     'CREATE INDEX IF NOT EXISTS writes_pending ON writes(next_at)'
   ]) sql.exec(statement);
@@ -35,6 +42,7 @@ export function openCloudState(storage) {
       sql.exec(`INSERT INTO skus (sku, main_item, child_item, shared_qty, main_qty, child_qty)
         VALUES (?, ?, ?, ?, ?, ?)`, sku, mainItem, childItem, qty, qty, qty);
       sql.exec('DELETE FROM prepared WHERE sku = ?', sku);
+      sql.exec('DELETE FROM discovered_skus WHERE sku = ?', sku);
       return true;
     },
     enqueue(id, sku) {
@@ -89,6 +97,36 @@ export function openCloudState(storage) {
     getPrepared: sku => one('SELECT * FROM prepared WHERE sku = ?', sku),
     listPrepared: () => all('SELECT * FROM prepared ORDER BY sku'),
     preparedCount: () => one('SELECT COUNT(*) AS count FROM prepared').count,
+    discoveryStatus: () => ({
+      baselineAt: one("SELECT value FROM discovery_meta WHERE key = 'baseline_at'")?.value ?? null,
+      lastScanAt: one("SELECT value FROM discovery_meta WHERE key = 'last_scan_at'")?.value ?? null,
+      newMainSkus: one('SELECT COUNT(*) AS count FROM observed_main_skus WHERE is_new = 1').count,
+      candidates: all('SELECT * FROM discovered_skus ORDER BY sku')
+    }),
+    recordDiscovery(mainSkus, candidates) {
+      const now = new Date().toISOString();
+      let baselineCreated = false;
+      transact(() => {
+        const baseline = one("SELECT value FROM discovery_meta WHERE key = 'baseline_at'");
+        baselineCreated = !baseline;
+        if (baselineCreated) sql.exec(
+          "INSERT INTO discovery_meta (key, value) VALUES ('baseline_at', ?)", now);
+        for (const sku of mainSkus) sql.exec(
+          'INSERT OR IGNORE INTO observed_main_skus (sku, is_new) VALUES (?, ?)',
+          sku, baselineCreated ? 0 : 1);
+        sql.exec('DELETE FROM discovered_skus');
+        for (const row of candidates) sql.exec(`INSERT INTO discovered_skus
+          (sku, main_item, child_item, main_qty, child_qty, discovered_at)
+          VALUES (?, ?, ?, ?, ?, ?)`, row.sku, row.mainItem, row.childItem,
+          row.mainQuantity, row.childQuantity, now);
+        sql.exec("INSERT OR REPLACE INTO discovery_meta (key, value) VALUES ('last_scan_at', ?)", now);
+      });
+      return baselineCreated;
+    },
+    newMainSkus: () => new Set(all(
+      'SELECT sku FROM observed_main_skus WHERE is_new = 1').map(row => row.sku)),
+    observedMainSkus: () => new Set(all('SELECT sku FROM observed_main_skus').map(row => row.sku)),
+    removeDiscovered: sku => sql.exec('DELETE FROM discovered_skus WHERE sku = ?', sku),
     pendingCount: () => one('SELECT COUNT(*) AS count FROM jobs WHERE done_at IS NULL').count,
     writeCount: () => one('SELECT COUNT(*) AS count FROM writes').count
   };

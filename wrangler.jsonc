@@ -9,7 +9,9 @@
     "MAIN_LOCATION_ID": "gid://shopify/Location/439267",
     "CHILD_LOCATION_ID": "gid://shopify/Location/62239080646",
     "SYNC_ENABLED": "false",
-    "ALLOW_INVENTORY_WRITES": "false"
+    "ALLOW_INVENTORY_WRITES": "false",
+    "FULL_ROLLOUT_COMPLETE": "false",
+    "AUTO_ENROLL_NEW_SKUS": "false"
   },
   "durable_objects": {
     "bindings": [
@@ -19,7 +21,7 @@
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["InventorySyncState"] }
   ],
-  "triggers": { "crons": ["*/15 * * * *"] },
+  "triggers": { "crons": ["*/15 * * * *", "7 3 * * *"] },
   "secrets": {
     "required": [
       "MAIN_CLIENT_ID", "MAIN_CLIENT_SECRET", "CHILD_CLIENT_ID",

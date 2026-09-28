@@ -15,6 +15,8 @@ The first initialization copies each eligible main quantity to the child. Later 
 
 - A Worker receives Shopify `inventory_levels/update` HTTPS webhooks, validates their HMAC, and accepts operator requests protected by `ADMIN_TOKEN`.
 - One SQLite-backed Durable Object persists initialized SKUs, deduplicated webhook jobs, pending writes, and a prepared read-only bootstrap plan. Its alarm retries pending work; a 15-minute Cron trigger checks for missed changes.
+- A second Cron trigger at 03:07 UTC scans both catalogs once a day for new main-store SKUs. The first scan records the existing main catalog as a baseline, so it cannot enroll the initial backlog. A new SKU becomes a candidate only when the exact SKU is unique, tracked, physical, stocked at the selected locations, present in both stores, and passes the original eligibility rules. Main SKUs whose child match appears later stay eligible for future scans.
+- Daily discovery is read-only while `AUTO_ENROLL_NEW_SKUS=false`. It can be inspected through authenticated `GET /admin/discovery`, or refreshed with `POST /admin/discovery/scan`. Automatic enrollment additionally requires `FULL_ROLLOUT_COMPLETE=true`, `SYNC_ENABLED=true`, and `ALLOW_INVENTORY_WRITES=true`. These switches all remain false. When explicitly enabled after the full rollout, it initializes up to five new eligible SKUs per day, copying the main quantity to the child with Shopify's quantity check, then queues a follow-up reconciliation.
 - Every inventory write uses Shopify compare-and-set and an idempotency key. The source store supplies the initial value; after initialization, both stores' quantity changes are combined.
 - One Durable Object instance owns the entire queue. No separate database or server is required.
 
@@ -43,6 +45,7 @@ The Node bootstrap is retained for local dry runs. **Use the Cloudflare operator
 5. Review the fresh plan and record its `planId`. Obtain explicit approval for a pilot SKU. For that approved window only, set `ALLOW_INVENTORY_WRITES=true` while leaving `SYNC_ENABLED=false`, then run `node --env-file=.env src/cloud-bootstrap.mjs --apply --sku=APPROVED_SKU --plan-id=REVIEWED_PLAN_ID`. The CLI also requires local `ALLOW_INVENTORY_WRITES=true`. It refuses changed quantities since the reviewed plan.
 6. After checking the pilot and obtaining separate approval for the full set, run a new read-only plan and review it. Then run `node --env-file=.env src/cloud-bootstrap.mjs --apply --all --plan-id=REVIEWED_PLAN_ID`. This initializes eligible SKUs one at a time. If any quantity changes during the run, it stops; run a new plan and review before resuming.
 7. Enable `SYNC_ENABLED=true` only after successful initialization and webhook checks. Monitor `/admin/status` and Worker logs. To pause live processing, set `SYNC_ENABLED=false`.
+8. New SKU enrollment requires its own approval. Set `FULL_ROLLOUT_COMPLETE=true` only after the initial catalog has been initialized, then separately approve `AUTO_ENROLL_NEW_SKUS=true`. Existing uninitialized main SKUs recorded in the daily baseline are never automatically added. Check `/admin/discovery` for candidates and skipped SKUs before enabling automatic enrollment.
 
 The operator CLI without `--apply` is read-only:
 

@@ -2,6 +2,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { randomUUID } from 'node:crypto';
 import { createShop, getQuantity, listVariants, setQuantity } from './shopify.mjs';
 import { buildBootstrapPlan } from './bootstrap-plan.mjs';
+import { buildDiscoveryPlan } from './discovery.mjs';
 import { loadExcludedSkus } from './exclusions.mjs';
 import { openCloudState } from './cloud-state.mjs';
 import { createEngine } from './engine.mjs';
@@ -26,6 +27,11 @@ function shops(env) {
 
 function locations(env) {
   return { main: env.MAIN_LOCATION_ID, child: env.CHILD_LOCATION_ID };
+}
+
+function autoEnrollmentEnabled(env) {
+  return env.SYNC_ENABLED === 'true' && env.ALLOW_INVENTORY_WRITES === 'true' &&
+    env.FULL_ROLLOUT_COMPLETE === 'true' && env.AUTO_ENROLL_NEW_SKUS === 'true';
 }
 
 function sameToken(actual, expected) {
@@ -57,7 +63,8 @@ export default {
     const url = new URL(request.url);
     if (request.method === 'GET' && url.pathname === '/health') {
       return json({ status: 'ok', syncEnabled: env.SYNC_ENABLED === 'true',
-        inventoryWritesEnabled: env.ALLOW_INVENTORY_WRITES === 'true' });
+        inventoryWritesEnabled: env.ALLOW_INVENTORY_WRITES === 'true',
+        autoEnrollmentEnabled: autoEnrollmentEnabled(env) });
     }
     const stub = binding(env);
     if (request.method === 'POST' && url.pathname === '/webhooks/inventory') {
@@ -82,16 +89,23 @@ export default {
     if (!sameToken(request.headers.get('authorization'), `Bearer ${env.ADMIN_TOKEN}`) ||
         !env.ADMIN_TOKEN) return json({ error: 'Unauthorized' }, 401);
     const route = url.pathname.slice('/admin'.length);
-    const allowed = (route === '/status' || route === '/plan' || route === '/prepared') ? request.method === 'GET'
-      : route === '/bootstrap' ? request.method === 'POST' : false;
+    const allowed = (route === '/status' || route === '/plan' || route === '/prepared' ||
+      route === '/discovery') ? request.method === 'GET'
+      : (route === '/bootstrap' || route === '/discovery/scan') ? request.method === 'POST' : false;
     if (!allowed) return json({ error: 'Not found' }, 404);
     return stub.fetch(new Request(`https://internal${route}`, {
       method: request.method, body: request.method === 'POST' ? await request.text() : undefined
     }));
   },
-  async scheduled(_event, env) {
-    if (env.SYNC_ENABLED !== 'true' || env.ALLOW_INVENTORY_WRITES !== 'true') return;
-    await binding(env).fetch('https://internal/reconcile');
+  async scheduled(event, env) {
+    if (event.cron === '7 3 * * *') {
+      const response = await binding(env).fetch('https://internal/discovery/scan', { method: 'POST' });
+      if (!response.ok) throw new Error(`Daily SKU discovery failed: ${await response.text()}`);
+      return;
+    }
+    if (env.SYNC_ENABLED === 'true' && env.ALLOW_INVENTORY_WRITES === 'true') {
+      await binding(env).fetch('https://internal/reconcile');
+    }
   }
 };
 
@@ -111,7 +125,9 @@ export class InventorySyncState extends DurableObject {
       if (path === '/status') return json({ initializedSkus: this.state.skuCount(),
         preparedSkus: this.state.preparedCount(), pendingJobs: this.state.pendingCount(),
         pendingWrites: this.state.writeCount(), syncEnabled: this.env.SYNC_ENABLED === 'true',
-        inventoryWritesEnabled: this.env.ALLOW_INVENTORY_WRITES === 'true' });
+        inventoryWritesEnabled: this.env.ALLOW_INVENTORY_WRITES === 'true',
+        autoEnrollmentEnabled: this.autoEnrollmentEnabled(),
+        discovery: this.state.discoveryStatus() });
       if (path === '/webhook' && request.method === 'POST') {
         const { side, deliveryId, payload } = await request.json();
         if (!['main', 'child'].includes(side) || typeof deliveryId !== 'string') return json({ error: 'Invalid event' }, 400);
@@ -124,6 +140,8 @@ export class InventorySyncState extends DurableObject {
       }
       if (path === '/plan' && request.method === 'GET') return json(await this.prepare());
       if (path === '/prepared' && request.method === 'GET') return json(this.prepared());
+      if (path === '/discovery' && request.method === 'GET') return json(this.state.discoveryStatus());
+      if (path === '/discovery/scan' && request.method === 'POST') return json(await this.discover());
       if (path === '/bootstrap' && request.method === 'POST') {
         let input;
         try { input = await request.json(); }
@@ -143,6 +161,10 @@ export class InventorySyncState extends DurableObject {
 
   live() {
     return this.env.SYNC_ENABLED === 'true' && this.env.ALLOW_INVENTORY_WRITES === 'true';
+  }
+
+  autoEnrollmentEnabled() {
+    return autoEnrollmentEnabled(this.env);
   }
 
   scheduleSoon() {
@@ -210,6 +232,50 @@ export class InventorySyncState extends DurableObject {
     this.state.seed(sku, row.main_item, row.child_item, main);
     return { sku, seeded: true, childChanged: main !== child, mainQuantity: main,
       previousChildQuantity: child };
+  }
+
+  async discover() {
+    const [main, child] = await Promise.all([
+      listVariants(this.shops.main, this.locations.main),
+      listVariants(this.shops.child, this.locations.child)
+    ]);
+    const status = this.state.discoveryStatus();
+    const { mainSkus, candidates, skipped } = buildDiscoveryPlan(main, child, {
+      baselineAt: status.baselineAt,
+      observedMainSkus: this.state.observedMainSkus(),
+      newMainSkus: this.state.newMainSkus(),
+      excludedSkus: loadExcludedSkus(),
+      isInitialized: sku => Boolean(this.state.getSku(sku))
+    });
+    const baselineCreated = this.state.recordDiscovery(mainSkus, candidates);
+    const enrolled = [];
+    if (this.autoEnrollmentEnabled()) {
+      for (const row of candidates.slice(0, 5)) {
+        try {
+          const [mainQuantity, childQuantity] = await Promise.all([
+            getQuantity(this.shops.main, row.mainItem, this.locations.main, row.sku),
+            getQuantity(this.shops.child, row.childItem, this.locations.child, row.sku)
+          ]);
+          if (!Number.isInteger(mainQuantity) || !Number.isInteger(childQuantity) ||
+              mainQuantity < 0 || childQuantity < 0) continue;
+          if (mainQuantity !== childQuantity) await setQuantity(this.shops.child, {
+            inventoryItemId: row.childItem, locationId: this.locations.child,
+            from: childQuantity, to: mainQuantity, key: randomUUID()
+          });
+          if (this.state.seed(row.sku, row.mainItem, row.childItem, mainQuantity)) {
+            this.state.enqueue(randomUUID(), row.sku);
+            this.scheduleSoon();
+            enrolled.push(row.sku);
+          }
+        } catch (error) {
+          console.error(JSON.stringify({ type: 'auto_enroll_error', sku: row.sku,
+            message: error.message }));
+        }
+      }
+    }
+    return { baselineCreated, observedMainSkus: mainSkus.size,
+      candidates: candidates.map(row => row.sku), skipped, enrolled,
+      autoEnrollmentEnabled: this.autoEnrollmentEnabled() };
   }
 
   async reconcile() {
