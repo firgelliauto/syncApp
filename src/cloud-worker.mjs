@@ -400,8 +400,14 @@ export class InventorySyncState extends DurableObject {
   }
 
   async pendingPreview() {
-    const jobs = this.state.pendingJobs(20);
+    const jobs = this.state.pendingJobs();
     const rows = [];
+    const [mainCatalog, childCatalog] = await Promise.all([
+      listVariants(this.shops.main, this.locations.main),
+      listVariants(this.shops.child, this.locations.child)
+    ]);
+    const mainByItem = new Map(mainCatalog.map(row => [row.inventoryItemId, row]));
+    const childByItem = new Map(childCatalog.map(row => [row.inventoryItemId, row]));
     for (const job of jobs) {
       const sku = this.state.getSku(job.sku);
       if (!sku) { rows.push({ sku: job.sku, error: 'SKU is not tracked' }); continue; }
@@ -411,10 +417,13 @@ export class InventorySyncState extends DurableObject {
       if (this.state.hasWrite(job.sku)) { rows.push({ sku: job.sku,
         note: 'An earlier planned update is waiting; see pending writes.' }); continue; }
       try {
-        const [main, child] = await Promise.all([
-          getQuantity(this.shops.main, sku.main_item, this.locations.main, sku.sku),
-          getQuantity(this.shops.child, sku.child_item, this.locations.child, sku.sku)
-        ]);
+        const mainItem = mainByItem.get(sku.main_item);
+        const childItem = childByItem.get(sku.child_item);
+        if (mainItem?.sku !== sku.sku || childItem?.sku !== sku.sku) {
+          throw new Error('SKU or inventory item changed; review before syncing');
+        }
+        const main = mainItem.quantity;
+        const child = childItem.quantity;
         if (!Number.isInteger(main) || !Number.isInteger(child)) throw new Error('Inventory level unavailable');
         const target = sku.shared_qty + (main - sku.main_qty) + (child - sku.child_qty);
         const mainDelta = main - sku.main_qty;
@@ -430,8 +439,21 @@ export class InventorySyncState extends DurableObject {
           childChange: target - child, error: target < 0 ? 'Combined stock would be negative; update blocked' : null });
       } catch (error) { rows.push({ sku: job.sku, error: error.message }); }
     }
+    const summary = { pendingSkus: rows.length, noChange: 0, childUpdates: 0,
+      mainUpdates: 0, bothUpdates: 0, ambiguous: 0, errors: 0 };
+    for (const row of rows) {
+      if (row.error) {
+        if (row.error.includes('Both stores changed')) summary.ambiguous++;
+        else summary.errors++;
+      } else if (Number.isInteger(row.target)) {
+        if (row.mainChange && row.childChange) summary.bothUpdates++;
+        else if (row.mainChange) summary.mainUpdates++;
+        else if (row.childChange) summary.childUpdates++;
+        else summary.noChange++;
+      }
+    }
     return { checkedAt: new Date().toISOString(), totalEvents: this.state.pendingCount(),
-      previewedSkus: rows.length, rows };
+      previewedSkus: rows.length, summary, rows };
   }
 
   async resolveBlockedSku(input) {

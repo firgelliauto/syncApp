@@ -83,23 +83,23 @@ function renderPlan(){const box=el('planRows');box.replaceChildren();if(!plan?.p
   if(!filtered.length){box.append(node('div','empty',query?'No changed SKUs match this search.':'No child quantities need changing in this snapshot.'));return}
   for(const row of filtered)previewRow(box,row.sku,'Child '+row.childQuantity+' → '+row.mainQuantity+' (main)');}
 function renderQueue(){if(!data)return;const box=el('queueRows');box.replaceChildren();const jobs=data.pendingJobs||[],writes=data.pendingWrites||[];
-  el('queueSummary').textContent=data.status.pendingJobs+' queued events · '+data.status.pendingWrites+' planned updates'+(preview?' · checked '+date(preview.checkedAt):' · click Check current stock for estimated quantities');
+  const summary=preview?.summary;
+  el('queueSummary').textContent=data.status.pendingJobs+' queued events · '+data.status.pendingWrites+' planned updates'+(summary?' · '+summary.childUpdates+' child only · '+summary.mainUpdates+' main only · '+summary.bothUpdates+' both stores · '+summary.ambiguous+' ambiguous · '+summary.noChange+' no change · checked '+date(preview.checkedAt):' · click Check current stock for estimated quantities');
   const bySku=new Map((preview?.rows||[]).map(r=>[r.sku,r]));
   for(const write of writes)previewRow(box,write.sku,(write.side==='main'?'Main':'Child')+' '+write.from_qty+' → '+write.to_qty+(write.attempts?' · retry '+write.attempts:''));
   for(const job of jobs){const row=bySku.get(job.sku);let detail=job.event_count+' queued event'+(job.event_count===1?'':'s')+' · '+date(job.created_at);
     if(row)detail+=' · '+(row.error||row.note||('Main '+row.main+' → '+row.target+'; child '+row.child+' → '+row.target+(row.approved?' · separate orders confirmed':'')));
     previewRow(box,job.sku,detail)}
   if(!jobs.length&&!writes.length)box.append(node('div','empty','No queued stock changes or pending updates.'));
-  if(data.status.pendingJobs>jobs.reduce((sum,row)=>sum+row.event_count,0))box.append(node('p','previewnote','More queued events exist. The first 100 SKUs are shown.'));
-  if(preview&&preview.previewedSkus<jobs.length)box.append(node('p','previewnote','Quantity estimates are shown for the first 20 queued SKUs.'));}
+  if(data.status.pendingJobs>jobs.reduce((sum,row)=>sum+row.event_count,0))box.append(node('p','previewnote','More queued events exist. The first 1,000 SKUs are shown.'));}
 function render(){if(!data)return;const s=data.status,c=data.control;el('live').textContent=s.active?'On':'Off';el('live').className='value '+(s.active?'good':'bad');
   el('refreshPlan').hidden=!c.canManage||Boolean(s.initialStagedAt);
   el('tracked').textContent=s.initializedSkus;el('pending').textContent=s.pendingJobs+s.pendingWrites;el('pending').className='value '+(s.pendingJobs+s.pendingWrites?'bad':'good');
   el('new').textContent=s.discovery.candidateCount;el('discovery').textContent=date(s.discovery.lastScanAt);el('scan').textContent=date(data.lastCompletedScan);
   el('updated').textContent='Updated '+new Date().toLocaleTimeString();const banner=el('banner');banner.className='banner '+(s.active?'good':'');
-  banner.textContent=s.active?'Live syncing is on. Inventory changes can update the other store.':'Sync is off. Shopify inventory changes are being logged but are not copied between stores.';
+  banner.textContent=s.active?'Live syncing is on. Inventory changes can update the other store.':!s.syncEnabled&&!s.inventoryWritesEnabled?'Observation mode: inventory writes are locked. Shopify changes are logged and previews are read-only.':'Sync is off. Shopify inventory changes are being logged but are not copied between stores.';
   el('controlState').textContent=s.active?'ON':'OFF';el('controlState').className='mode '+(s.active?'on':'off');
-  el('controlMessage').textContent=s.active?'Both stores are syncing. Pause stops new inventory updates.':c.blockedSkus?'Sync is paused. '+c.blockedSkus+' SKU(s) need review before enabling.':c.rolloutReady?'Sync is paused. Enable to check current stock and process pending changes.':'Sync is off while the full rollout is being prepared.';
+  el('controlMessage').textContent=s.active?'Both stores are syncing. Pause stops new inventory updates.':!s.syncEnabled&&!s.inventoryWritesEnabled?'Observation mode. The existing inventory app can continue while this app shows proposed changes.':c.blockedSkus?'Sync is paused. '+c.blockedSkus+' SKU(s) need review before enabling.':c.rolloutReady?'Sync is paused. Enable to check current stock and process pending changes.':'Sync is off while the full rollout is being prepared.';
   el('controlHint').textContent=!c.canManage?'Only the approved main-store account can change this setting.':c.blockedSkus?'Both stores changed for one or more SKUs; the app will not guess whether these are separate sales.':!c.rolloutReady?'Enable stays locked until full rollout is approved and the safety switches are on.':'Webhook activity continues while syncing is paused.';
   const controlButton=el('controlButton');controlButton.hidden=!c.canManage;controlButton.textContent=s.active?'Pause syncing':'Enable syncing';controlButton.className='controlbutton '+(s.active?'pause':'enable');controlButton.disabled=!c.rolloutReady||Boolean(c.blockedSkus);
   const activeRetries=data.pendingWrites.filter(w=>w.attempts>0);

@@ -209,7 +209,7 @@ export function openCloudState(storage) {
     observedMainSkus: () => new Set(all('SELECT sku FROM observed_main_skus').map(row => row.sku)),
     removeDiscovered: sku => sql.exec('DELETE FROM discovered_skus WHERE sku = ?', sku),
     pendingCount: () => one('SELECT COUNT(*) AS count FROM jobs WHERE done_at IS NULL').count,
-    pendingJobs: (limit = 100) => all(`SELECT sku, MIN(created_at) AS created_at,
+    pendingJobs: (limit = 1000) => all(`SELECT sku, MIN(created_at) AS created_at,
       COUNT(*) AS event_count FROM jobs WHERE done_at IS NULL GROUP BY sku
       ORDER BY created_at LIMIT ?`, limit),
     writeCount: () => one('SELECT COUNT(*) AS count FROM writes').count,

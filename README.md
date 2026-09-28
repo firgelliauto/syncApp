@@ -11,6 +11,8 @@ The staged baseline takes each eligible main quantity as the starting shared qua
 
 The initial matching catalog has been staged in the Cloudflare Durable Object without changing Shopify inventory. **All rollout switches and the persisted dashboard control are Off.** One main-store order reduced each of two SKUs by 3, and the child store also decreased by 3 while this app was Off. The earlier assumption that there were separate child-store orders was wrong and has been reversed. Both SKUs have been rebaselined to their verified current quantities, 430 and 43, without changing Shopify inventory; their erroneous approvals and queued jobs were removed. Do not re-enable this app until the process that already mirrors main-store inventory to the child is identified and its overlap with this app is resolved. The Worker blocks simultaneous two-store changes instead of double counting them. The earlier live-store review is in the ignored `reports/read-only-review.md`.
 
+The app is currently in **observation mode** alongside the existing sync. Shopify webhooks continue to queue, and the dashboard's pending-work check reads both catalogs to show proposed changes for all queued SKUs. It labels two-store changes as ambiguous rather than proposing a double deduction. No inventory is written and the saved baseline is not silently advanced. Before switching from the existing sync to this app, review those observations, stop the existing sync, rebaseline mirrored changes, rerun the full preflight, and only then deploy the rollout switches with the dashboard still Off.
+
 ## Cloudflare design
 
 - A Worker receives Shopify `inventory_levels/update` HTTPS webhooks, validates their HMAC, and accepts operator requests protected by `ADMIN_TOKEN`.
