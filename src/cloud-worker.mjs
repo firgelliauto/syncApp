@@ -133,13 +133,14 @@ export default {
     if (!sameToken(request.headers.get('authorization'), `Bearer ${env.ADMIN_TOKEN}`) ||
         !env.ADMIN_TOKEN) return json({ error: 'Unauthorized' }, 401);
     const route = url.pathname.slice('/admin'.length);
-    const allowed = (route === '/status' || route === '/plan' || route === '/prepared' ||
+    const allowed = (route === '/status' || route === '/sku' || route === '/plan' || route === '/prepared' ||
       route === '/preflight' ||
       route === '/discovery') ? request.method === 'GET'
       : (route === '/bootstrap' || route === '/stage' || route === '/resolve' ||
+        route === '/rebaseline-mirror' ||
         route === '/discovery/scan') ? request.method === 'POST' : false;
     if (!allowed) return json({ error: 'Not found' }, 404);
-    return stub.fetch(new Request(`https://internal${route}`, {
+    return stub.fetch(new Request(`https://internal${route}${url.search}`, {
       method: request.method, body: request.method === 'POST' ? await request.text() : undefined
     }));
   },
@@ -205,6 +206,16 @@ export class InventorySyncState extends DurableObject {
         activity: this.state.recentActivity(150) });
       }
       if (path === '/plan' && request.method === 'GET') return json(this.prepared());
+      if (path === '/sku' && request.method === 'GET') {
+        const sku = url.searchParams.get('sku');
+        if (!sku) return json({ error: 'Provide SKU' }, 400);
+        const row = this.state.getSku(sku);
+        return row ? json({ sku, sharedQuantity: row.shared_qty,
+          mainBaseline: row.main_qty, childBaseline: row.child_qty,
+          blocked: this.state.getBlock(sku),
+          approvedConflict: this.state.approvedConflict(sku) }) :
+          json({ error: 'SKU is not tracked' }, 404);
+      }
       if (path === '/preflight' && request.method === 'GET') {
         const conflicts = await this.preflightConflicts();
         return json({ conflicts, blockedSkus: this.state.blockedSkus(),
@@ -270,6 +281,10 @@ export class InventorySyncState extends DurableObject {
       if (path === '/resolve' && request.method === 'POST') {
         const input = await request.json();
         return json(await this.resolveBlockedSku(input));
+      }
+      if (path === '/rebaseline-mirror' && request.method === 'POST') {
+        const input = await request.json();
+        return json(await this.rebaselineMirror(input));
       }
       if (path === '/reconcile') {
         if (this.live()) await this.reconcile();
@@ -446,6 +461,35 @@ export class InventorySyncState extends DurableObject {
     this.logActivity({ type: 'conflict_approved', sku: row.sku,
       message: `Separate orders confirmed: main ${main}, child ${child}; shared target ${target}. No quantity was written.` });
     return { sku: row.sku, main, child, target, approved: true, active: this.live() };
+  }
+
+  async rebaselineMirror(input) {
+    if (!this.state.isPaused() || this.env.SYNC_ENABLED === 'true' ||
+        this.env.ALLOW_INVENTORY_WRITES === 'true') {
+      throw new Error('Disable sync and inventory writes before rebaselining');
+    }
+    if (typeof input?.sku !== 'string' || !Number.isInteger(input?.expectedQuantity)) {
+      throw new Error('Provide exact SKU and reviewed quantity');
+    }
+    const row = this.state.getSku(input.sku);
+    if (!row) throw new Error('SKU is not tracked');
+    const [main, child] = await Promise.all([
+      getQuantity(this.shops.main, row.main_item, this.locations.main, row.sku),
+      getQuantity(this.shops.child, row.child_item, this.locations.child, row.sku)
+    ]);
+    if (main !== input.expectedQuantity || child !== input.expectedQuantity) {
+      throw new Error('Store quantities differ from reviewed value; stop and investigate');
+    }
+    const mainDelta = main - row.main_qty;
+    const childDelta = child - row.child_qty;
+    if (mainDelta >= 0 || mainDelta !== childDelta) {
+      throw new Error('Changes do not match a single mirrored decrease');
+    }
+    this.state.rebaselineMirroredChange(row.sku, main);
+    this.logActivity({ type: 'mirror_rebaselined', sku: row.sku,
+      message: `One main-store order mirrored to both stores (${mainDelta}); saved baseline set to ${main}. No Shopify inventory was changed.` });
+    return { sku: row.sku, quantity: main, mirroredChange: mainDelta,
+      active: this.live(), inventoryChanged: false };
   }
 
   async bootstrapSku(sku, planId) {

@@ -81,6 +81,7 @@ export function openCloudState(storage) {
     },
     isApprovedConflict: (sku, main, child) => Boolean(one(`SELECT 1 AS found FROM approved_conflicts
       WHERE sku = ? AND main_qty = ? AND child_qty = ?`, sku, main, child)),
+    approvedConflict: sku => one('SELECT * FROM approved_conflicts WHERE sku = ?', sku),
     approveConflict(sku, main, child) {
       if (!one('SELECT 1 AS found FROM blocked_skus WHERE sku = ?', sku)) {
         throw new Error('SKU is not blocked for review');
@@ -89,6 +90,21 @@ export function openCloudState(storage) {
         sql.exec(`INSERT OR REPLACE INTO approved_conflicts (sku, main_qty, child_qty, approved_at)
           VALUES (?, ?, ?, ?)`, sku, main, child, new Date().toISOString());
         sql.exec('DELETE FROM blocked_skus WHERE sku = ?', sku);
+      });
+    },
+    rebaselineMirroredChange(sku, quantity) {
+      if (!Number.isInteger(quantity) || quantity < 0) throw new Error('Invalid mirrored quantity');
+      if (!one('SELECT 1 AS found FROM skus WHERE sku = ?', sku)) throw new Error('SKU is not tracked');
+      if (one('SELECT 1 AS found FROM writes WHERE sku = ?', sku)) {
+        throw new Error('SKU has a pending write; stop and review before rebaselining');
+      }
+      transact(() => {
+        sql.exec('UPDATE skus SET shared_qty = ?, main_qty = ?, child_qty = ? WHERE sku = ?',
+          quantity, quantity, quantity, sku);
+        sql.exec('DELETE FROM approved_conflicts WHERE sku = ?', sku);
+        sql.exec('DELETE FROM blocked_skus WHERE sku = ?', sku);
+        sql.exec('UPDATE jobs SET done_at = ? WHERE sku = ? AND done_at IS NULL',
+          new Date().toISOString(), sku);
       });
     },
     markJobDone: id => sql.exec('UPDATE jobs SET done_at = ? WHERE id = ?', new Date().toISOString(), id),

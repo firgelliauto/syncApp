@@ -53,6 +53,16 @@ test('staging records the main baseline and queues differences without inventory
     assert.equal(state.isApprovedConflict('DIFFERENT', 9, 12), false);
     state.plan('DIFFERENT', { main: 10, child: 12 }, 9, []);
     assert.equal(state.isApprovedConflict('DIFFERENT', 10, 12), false);
+    state.enqueue('mirrored-webhook', 'DIFFERENT');
+    state.blockSku('DIFFERENT', 8, 8, 'Both stores changed');
+    state.approveConflict('DIFFERENT', 8, 8);
+    state.rebaselineMirroredChange('DIFFERENT', 8);
+    assert.deepEqual({ ...state.getSku('DIFFERENT') }, {
+      sku: 'DIFFERENT', main_item: 'main-diff', child_item: 'child-diff',
+      shared_qty: 8, main_qty: 8, child_qty: 8
+    });
+    assert.equal(state.pendingCount(), 0);
+    assert.equal(state.isApprovedConflict('DIFFERENT', 8, 8), false);
     assert.throws(() => state.stagePrepared(planId), /already staged/);
   } finally { db.close(); }
 });

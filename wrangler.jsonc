@@ -8,10 +8,10 @@
     "CHILD_SHOP": "firgelli1.myshopify.com",
     "MAIN_LOCATION_ID": "gid://shopify/Location/439267",
     "CHILD_LOCATION_ID": "gid://shopify/Location/62239080646",
-    "SYNC_ENABLED": "true",
-    "ALLOW_INVENTORY_WRITES": "true",
-    "FULL_ROLLOUT_COMPLETE": "true",
-    "AUTO_ENROLL_NEW_SKUS": "true"
+    "SYNC_ENABLED": "false",
+    "ALLOW_INVENTORY_WRITES": "false",
+    "FULL_ROLLOUT_COMPLETE": "false",
+    "AUTO_ENROLL_NEW_SKUS": "false"
   },
   "durable_objects": {
     "bindings": [
