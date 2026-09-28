@@ -15,7 +15,8 @@ export function createEngine({ state, shops, locations, onLog = console.log,
     }
     const mainDelta = main - row.main_qty;
     const childDelta = child - row.child_qty;
-    if (mainDelta !== 0 && childDelta !== 0) {
+    if (mainDelta !== 0 && childDelta !== 0 &&
+        !state.isApprovedConflict?.(sku, main, child)) {
       const message = `Both stores changed: main ${row.main_qty} → ${main} (${mainDelta >= 0 ? '+' : ''}${mainDelta}), child ${row.child_qty} → ${child} (${childDelta >= 0 ? '+' : ''}${childDelta}). Could be separate sales or another sync app; no quantity was written.`;
       state.blockSku?.(sku, main, child, message);
       onLog({ type: 'ambiguous_change', level: 'error', sku, main, child, message });

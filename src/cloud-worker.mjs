@@ -136,7 +136,8 @@ export default {
     const allowed = (route === '/status' || route === '/plan' || route === '/prepared' ||
       route === '/preflight' ||
       route === '/discovery') ? request.method === 'GET'
-      : (route === '/bootstrap' || route === '/stage' || route === '/discovery/scan') ? request.method === 'POST' : false;
+      : (route === '/bootstrap' || route === '/stage' || route === '/resolve' ||
+        route === '/discovery/scan') ? request.method === 'POST' : false;
     if (!allowed) return json({ error: 'Not found' }, 404);
     return stub.fetch(new Request(`https://internal${route}`, {
       method: request.method, body: request.method === 'POST' ? await request.text() : undefined
@@ -266,6 +267,10 @@ export class InventorySyncState extends DurableObject {
           message: `${result.stagedSkus} SKUs staged without Shopify inventory changes; ${result.initialChanges} initial differences queued` });
         return json(result);
       }
+      if (path === '/resolve' && request.method === 'POST') {
+        const input = await request.json();
+        return json(await this.resolveBlockedSku(input));
+      }
       if (path === '/reconcile') {
         if (this.live()) await this.reconcile();
         return json({ accepted: true });
@@ -314,7 +319,8 @@ export class InventorySyncState extends DurableObject {
       }
       const mainDelta = a.quantity - row.main_qty;
       const childDelta = b.quantity - row.child_qty;
-      if (mainDelta !== 0 && childDelta !== 0) {
+      if (mainDelta !== 0 && childDelta !== 0 &&
+          !this.state.isApprovedConflict(row.sku, a.quantity, b.quantity)) {
         conflicts.push(row.sku);
         const reason = `Both stores changed: main ${row.main_qty} → ${a.quantity} (${mainDelta >= 0 ? '+' : ''}${mainDelta}), child ${row.child_qty} → ${b.quantity} (${childDelta >= 0 ? '+' : ''}${childDelta}); no quantity was written.`;
         if (!this.state.getBlock(row.sku)) {
@@ -398,17 +404,48 @@ export class InventorySyncState extends DurableObject {
         const target = sku.shared_qty + (main - sku.main_qty) + (child - sku.child_qty);
         const mainDelta = main - sku.main_qty;
         const childDelta = child - sku.child_qty;
-        if (mainDelta !== 0 && childDelta !== 0) {
+        const approved = this.state.isApprovedConflict(job.sku, main, child);
+        if (mainDelta !== 0 && childDelta !== 0 && !approved) {
           rows.push({ sku: job.sku, main, child, target: null, mainChange: null,
             childChange: null, error: `Both stores changed (main ${mainDelta >= 0 ? '+' : ''}${mainDelta}, child ${childDelta >= 0 ? '+' : ''}${childDelta}). Ambiguous; no update will be made.` });
           continue;
         }
-        rows.push({ sku: job.sku, main, child, target, mainChange: target - main,
+        rows.push({ sku: job.sku, main, child, target, approved,
+          mainChange: target - main,
           childChange: target - child, error: target < 0 ? 'Combined stock would be negative; update blocked' : null });
       } catch (error) { rows.push({ sku: job.sku, error: error.message }); }
     }
     return { checkedAt: new Date().toISOString(), totalEvents: this.state.pendingCount(),
       previewedSkus: rows.length, rows };
+  }
+
+  async resolveBlockedSku(input) {
+    if (!this.state.isPaused() || this.live()) throw new Error('Pause syncing before resolving a blocked SKU');
+    if (input?.decision !== 'independent_orders' || typeof input.sku !== 'string' ||
+        !Number.isInteger(input.expectedMain) || !Number.isInteger(input.expectedChild)) {
+      throw new Error('Provide SKU, independent_orders decision, and reviewed quantities');
+    }
+    const row = this.state.getSku(input.sku);
+    const block = this.state.getBlock(input.sku);
+    if (!row || !block) throw new Error('SKU is not blocked for review');
+    const [main, child] = await Promise.all([
+      getQuantity(this.shops.main, row.main_item, this.locations.main, row.sku),
+      getQuantity(this.shops.child, row.child_item, this.locations.child, row.sku)
+    ]);
+    if (main !== input.expectedMain || child !== input.expectedChild ||
+        main !== block.main_qty || child !== block.child_qty) {
+      throw new Error('Stock changed since review; run preflight again');
+    }
+    if (main >= row.main_qty || child >= row.child_qty) {
+      throw new Error('Independent-order resolution requires a decrease in both stores');
+    }
+    const target = row.shared_qty + (main - row.main_qty) + (child - row.child_qty);
+    if (target < 0) throw new Error('Combined stock would be negative');
+    this.state.approveConflict(row.sku, main, child);
+    this.state.enqueue(randomUUID(), row.sku);
+    this.logActivity({ type: 'conflict_approved', sku: row.sku,
+      message: `Separate orders confirmed: main ${main}, child ${child}; shared target ${target}. No quantity was written.` });
+    return { sku: row.sku, main, child, target, approved: true, active: this.live() };
   }
 
   async bootstrapSku(sku, planId) {

@@ -47,6 +47,12 @@ test('staging records the main baseline and queues differences without inventory
     state.blockSku('DIFFERENT', 10, 12, 'Both stores changed');
     assert.equal(state.blockedCount(), 1);
     assert.equal(state.getBlock('DIFFERENT').reason, 'Both stores changed');
+    state.approveConflict('DIFFERENT', 10, 12);
+    assert.equal(state.blockedCount(), 0);
+    assert.equal(state.isApprovedConflict('DIFFERENT', 10, 12), true);
+    assert.equal(state.isApprovedConflict('DIFFERENT', 9, 12), false);
+    state.plan('DIFFERENT', { main: 10, child: 12 }, 9, []);
+    assert.equal(state.isApprovedConflict('DIFFERENT', 10, 12), false);
     assert.throws(() => state.stagePrepared(planId), /already staged/);
   } finally { db.close(); }
 });

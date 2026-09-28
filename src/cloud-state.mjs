@@ -19,6 +19,9 @@ export function openCloudState(storage) {
     `CREATE TABLE IF NOT EXISTS blocked_skus (
       sku TEXT PRIMARY KEY, main_qty INTEGER NOT NULL, child_qty INTEGER NOT NULL,
       reason TEXT NOT NULL, blocked_at TEXT NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS approved_conflicts (
+      sku TEXT PRIMARY KEY, main_qty INTEGER NOT NULL, child_qty INTEGER NOT NULL,
+      approved_at TEXT NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS discovery_meta (
       key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS observed_main_skus (
@@ -70,8 +73,23 @@ export function openCloudState(storage) {
     blockedSkus: () => all('SELECT * FROM blocked_skus ORDER BY blocked_at DESC'),
     blockedCount: () => one('SELECT COUNT(*) AS count FROM blocked_skus').count,
     blockSku(sku, main, child, reason) {
-      sql.exec(`INSERT OR REPLACE INTO blocked_skus (sku, main_qty, child_qty, reason, blocked_at)
-        VALUES (?, ?, ?, ?, ?)`, sku, main, child, reason, new Date().toISOString());
+      transact(() => {
+        sql.exec(`INSERT OR REPLACE INTO blocked_skus (sku, main_qty, child_qty, reason, blocked_at)
+          VALUES (?, ?, ?, ?, ?)`, sku, main, child, reason, new Date().toISOString());
+        sql.exec('DELETE FROM approved_conflicts WHERE sku = ?', sku);
+      });
+    },
+    isApprovedConflict: (sku, main, child) => Boolean(one(`SELECT 1 AS found FROM approved_conflicts
+      WHERE sku = ? AND main_qty = ? AND child_qty = ?`, sku, main, child)),
+    approveConflict(sku, main, child) {
+      if (!one('SELECT 1 AS found FROM blocked_skus WHERE sku = ?', sku)) {
+        throw new Error('SKU is not blocked for review');
+      }
+      transact(() => {
+        sql.exec(`INSERT OR REPLACE INTO approved_conflicts (sku, main_qty, child_qty, approved_at)
+          VALUES (?, ?, ?, ?)`, sku, main, child, new Date().toISOString());
+        sql.exec('DELETE FROM blocked_skus WHERE sku = ?', sku);
+      });
     },
     markJobDone: id => sql.exec('UPDATE jobs SET done_at = ? WHERE id = ?', new Date().toISOString(), id),
     plan(sku, snapshot, target, writes) {
@@ -81,6 +99,7 @@ export function openCloudState(storage) {
         for (const write of writes) sql.exec(
           'INSERT INTO writes (id, sku, side, from_qty, to_qty) VALUES (?, ?, ?, ?, ?)',
           write.id, sku, write.side, write.from, write.to);
+        sql.exec('DELETE FROM approved_conflicts WHERE sku = ?', sku);
       });
     },
     completeWrite(write) {

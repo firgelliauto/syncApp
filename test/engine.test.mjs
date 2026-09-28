@@ -97,6 +97,36 @@ test('two store decreases are treated as ambiguous and never double deducted', a
   state.close();
 });
 
+test('confirmed separate sales are combined once and app write webhooks do not repeat them', async () => {
+  const state = openState(':memory:');
+  state.seed('SKU', 'main-item', 'child-item', 433);
+  const actual = { main: 430, child: 430 };
+  const writes = [];
+  const engine = createEngine({ state: { ...state,
+    isApprovedConflict: (sku, main, child) => sku === 'SKU' && main === 430 && child === 430 },
+  shops: { main: { side: 'main' }, child: { side: 'child' } },
+  locations: { main: 'm', child: 'c' },
+  readQuantity: async shop => actual[shop.side],
+  writeQuantity: async (shop, write) => {
+    assert.equal(actual[shop.side], write.from);
+    actual[shop.side] = write.to;
+    writes.push({ side: shop.side, from: write.from, to: write.to });
+  }, onLog: () => {} });
+  state.enqueue('main-order', 'SKU');
+  state.enqueue('child-order', 'SKU');
+  await drain(engine);
+  assert.deepEqual(actual, { main: 427, child: 427 });
+  assert.deepEqual(writes, [
+    { side: 'main', from: 430, to: 427 },
+    { side: 'child', from: 430, to: 427 }
+  ]);
+  state.enqueue('main-app-echo', 'SKU');
+  state.enqueue('child-app-echo', 'SKU');
+  await drain(engine);
+  assert.equal(writes.length, 2);
+  state.close();
+});
+
 test('stale compare-and-set rescans and keeps the intervening sale', async () => {
   const { state, actual, engine } = setup();
   actual.main = 9;

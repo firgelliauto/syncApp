@@ -66,7 +66,7 @@ const names={webhook:'Stock change received',change:'Stock change detected',writ
   stale:'Stock changed during update',negative_blocked:'Negative stock prevented',
   cloud_error:'App operation failed',worker_error:'Sync worker failed',auto_enroll_error:'New SKU enrollment failed',
   sync_paused:'Sync paused',sync_resumed:'Sync enabled',catalog_staged:'Catalog staged',
-  ambiguous_change:'Both stores changed; SKU blocked'};
+  ambiguous_change:'Both stores changed; SKU blocked',conflict_approved:'Separate orders confirmed'};
 function node(tag,className,text){const e=document.createElement(tag);if(className)e.className=className;if(text!==undefined)e.textContent=String(text);return e}
 function line(e){const title=names[e.type]||e.type;const sku=e.sku?' · '+e.sku:'';const side=e.side==='main'?'Main store':e.side==='child'?'Child store':'';
   const quantity=e.from_qty!==null&&e.to_qty!==null?' · '+e.from_qty+' → '+e.to_qty:'';
@@ -86,7 +86,7 @@ function renderQueue(){if(!data)return;const box=el('queueRows');box.replaceChil
   const bySku=new Map((preview?.rows||[]).map(r=>[r.sku,r]));
   for(const write of writes)previewRow(box,write.sku,(write.side==='main'?'Main':'Child')+' '+write.from_qty+' → '+write.to_qty+(write.attempts?' · retry '+write.attempts:''));
   for(const job of jobs){const row=bySku.get(job.sku);let detail=job.event_count+' queued event'+(job.event_count===1?'':'s')+' · '+date(job.created_at);
-    if(row)detail+=' · '+(row.error||row.note||('Main '+row.main+' → '+row.target+'; child '+row.child+' → '+row.target));
+    if(row)detail+=' · '+(row.error||row.note||('Main '+row.main+' → '+row.target+'; child '+row.child+' → '+row.target+(row.approved?' · separate orders confirmed':'')));
     previewRow(box,job.sku,detail)}
   if(!jobs.length&&!writes.length)box.append(node('div','empty','No queued stock changes or pending updates.'));
   if(data.status.pendingJobs>jobs.reduce((sum,row)=>sum+row.event_count,0))box.append(node('p','previewnote','More queued events exist. The first 100 SKUs are shown.'));
