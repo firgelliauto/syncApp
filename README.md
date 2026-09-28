@@ -9,17 +9,17 @@ The first initialization copies each eligible main quantity to the child. Later 
 
 ## Current safety state
 
-`wrangler.jsonc` sets `SYNC_ENABLED=false` and `ALLOW_INVENTORY_WRITES=false`. The Worker may be deployed and queried in this state, but it cannot initialize SKUs or change Shopify inventory. The code also requires both flags to process webhook jobs. Do not change either flag until the store owner approves the exact pilot and then the full rollout. The earlier live-store review is in the ignored `reports/read-only-review.md`.
+`wrangler.jsonc` sets `SYNC_ENABLED=false`, `ALLOW_INVENTORY_WRITES=false`, and `FULL_ROLLOUT_COMPLETE=false`. The Worker may be deployed and queried in this state, but it cannot initialize SKUs or change Shopify inventory. Live processing additionally requires the persisted dashboard control to be On. Do not change these rollout flags until the store owner approves the relevant inventory work. The earlier live-store review is in the ignored `reports/read-only-review.md`.
 
 ## Cloudflare design
 
 - A Worker receives Shopify `inventory_levels/update` HTTPS webhooks, validates their HMAC, and accepts operator requests protected by `ADMIN_TOKEN`.
 - One SQLite-backed Durable Object persists initialized SKUs, deduplicated webhook jobs, pending writes, and a prepared read-only bootstrap plan. Its alarm retries pending work; a 15-minute Cron trigger checks for missed changes.
 - A second Cron trigger at 03:07 UTC scans both catalogs once a day for new main-store SKUs. The first scan records the existing main catalog as a baseline, so it cannot enroll the initial backlog. A new SKU becomes a candidate only when the exact SKU is unique, tracked, physical, stocked at the selected locations, present in both stores, and passes the original eligibility rules. Main SKUs whose child match appears later stay eligible for future scans.
-- Daily discovery is read-only while `AUTO_ENROLL_NEW_SKUS=false`. It can be inspected through authenticated `GET /admin/discovery`, or refreshed with `POST /admin/discovery/scan`. Automatic enrollment additionally requires `FULL_ROLLOUT_COMPLETE=true`, `SYNC_ENABLED=true`, and `ALLOW_INVENTORY_WRITES=true`. These switches all remain false. When explicitly enabled after the full rollout, it initializes up to five new eligible SKUs per day, copying the main quantity to the child with Shopify's quantity check, then queues a follow-up reconciliation.
+- Daily discovery is read-only while `AUTO_ENROLL_NEW_SKUS=false`. It can be inspected through authenticated `GET /admin/discovery`, or refreshed with `POST /admin/discovery/scan`. Automatic enrollment additionally requires the three rollout flags and the dashboard control to be On. These switches all remain false. When explicitly enabled after the full rollout, it initializes up to five new eligible SKUs per day, copying the main quantity to the child with Shopify's quantity check, then queues a follow-up reconciliation.
 - Every inventory write uses Shopify compare-and-set and an idempotency key. The source store supplies the initial value; after initialization, both stores' quantity changes are combined.
 - One Durable Object instance owns the entire queue. No separate database or server is required.
-- The read-only App Home at the Worker's root path shows sync status, new SKU candidates, active retries, recent failures, and a searchable SKU activity history. Shopify App Bridge supplies a short-lived ID token for each browser request; the Worker verifies its signature and allows only the two configured shops. The operator `ADMIN_TOKEN` is never sent to the browser. Activity begins when this feature is deployed and is retained for up to 90 days or 5,000 events, whichever limit is reached first.
+- App Home at the Worker's root path shows sync status, new SKU candidates, active retries, recent failures, and a searchable SKU activity history. The approved main-store account can pause or resume after rollout approval; other viewers have read-only access. Shopify App Bridge supplies a short-lived ID token for each browser request; the Worker verifies its signature and allows only the two configured shops. The operator `ADMIN_TOKEN` is never sent to the browser. Activity begins when this feature is deployed and is retained for up to 90 days or 5,000 events, whichever limit is reached first.
 
 Shopify webhooks are asynchronous. Two simultaneous purchases of the last unit can still oversell before the stores exchange updates. A stock buffer is needed if that risk is unacceptable.
 
@@ -54,7 +54,7 @@ The operator CLI without `--apply` is read-only:
 node --env-file=.env src/cloud-bootstrap.mjs
 ```
 
-## Read-only Shopify App Home
+## Shopify App Home
 
 The Worker serves its dashboard at `https://firgelli-inventory-sync.firgelli-inventory-sync.workers.dev/`. To open it by clicking the installed app in Shopify admin, set the app's **App URL** to that root URL, enable **Embed app in Shopify admin**, and release a new app version in the Dev Dashboard. The Worker must be deployed first. These App Home settings do not change inventory permissions or enable syncing. The current `/health` URL remains a machine health endpoint.
 
@@ -62,7 +62,7 @@ The public HTML shell contains no inventory data. `GET /viewer/overview` require
 
 The dashboard includes a persistent On/Off sync control. Set `SYNC_CONTROL_USER_ID` as a Cloudflare secret to the approved main-store Shopify staff ID; all other staff and child-store users can view status but cannot change it. The control starts **Off**, and Enable remains locked until `SYNC_ENABLED`, `ALLOW_INVENTORY_WRITES`, and `FULL_ROLLOUT_COMPLETE` are all `true` following explicit rollout approval. Pausing stops new work, keeps webhook events queued, and leaves any already-started Shopify request to finish. Enabling schedules a fresh stock reconciliation before pending jobs are processed. This control does not grant permission to initialize SKUs and does not change Shopify app scopes.
 
-During Shopify client-secret rotation, set `WEBHOOK_OLD_CLIENT_SECRET` to the oldest unrevoked secret while `MAIN_CLIENT_SECRET` and `CHILD_CLIENT_SECRET` use the new one. Shopify keeps signing webhooks with the oldest secret until it is revoked. The Worker accepts both during that window; remove the old secret after revocation. Keep all values in ignored env files and Cloudflare secrets.
+During Shopify client-secret rotation, set `WEBHOOK_OLD_CLIENT_SECRET` to the oldest unrevoked secret while `MAIN_CLIENT_SECRET` and `CHILD_CLIENT_SECRET` use the new one. Shopify keeps signing webhooks with the oldest secret until it is revoked and may take up to an hour to switch. The Worker accepts both during that window; remove the old secret after the transition. Keep all values in ignored env files and Cloudflare secrets.
 
 Do not run multiple competing initializations. `ADMIN_TOKEN` grants operator access; keep it secret and rotate it if exposed. Never put a Shopify client secret in `wrangler.jsonc` or the repository.
 
