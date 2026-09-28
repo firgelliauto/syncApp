@@ -70,7 +70,7 @@ export async function listVariants(client, locationId) {
     throw new Error(`${client.shop}: choose a Location GID first`);
   }
   const query = `query Variants($after: String, $location: ID!) {
-    productVariants(first: 25, after: $after) {
+    productVariants(first: 100, after: $after) {
       nodes { id sku inventoryPolicy inventoryItem { id tracked requiresShipping
         inventoryLevel(locationId: $location) { quantities(names: ["available"]) { name quantity } }
       } }
