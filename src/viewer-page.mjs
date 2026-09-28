@@ -14,6 +14,7 @@ h1{font-size:30px;letter-spacing:-.04em;margin:6px 0 8px}h2{font-size:17px;lette
 .refresh{border:1px solid #c8d0d6;background:#fff;border-radius:9px;padding:9px 15px;font:inherit;font-size:13px;font-weight:650;color:#1c2a37;cursor:pointer}
 .refresh:hover{background:#edf4f5}.refresh:disabled{opacity:.5;cursor:wait}
 .grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:22px}
+.usagepanel{padding:18px 20px;margin-bottom:22px}.usagehead{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}.usagevalue{font-size:14px;font-weight:750;color:#263442}.usagebar{height:11px;background:#e8edef;border-radius:999px;overflow:hidden;margin:13px 0 9px}.usagefill{height:100%;width:0;background:#15946c;border-radius:inherit;transition:width .3s ease}.usagefill.warn{background:#d38b19}.usagefill.bad{background:#c0362c}.usagefacts{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;font-size:11px;color:#6d7882}
 .card,.panel{background:#fff;border:1px solid #e1e6e8;border-radius:14px;box-shadow:0 2px 8px #15223408}
 .card{padding:19px 20px}.card .label{font-size:12px;color:#65717d;font-weight:650}.card .value{font-size:28px;letter-spacing:-.045em;font-weight:750;margin-top:6px}.card .hint{font-size:12px;color:#75808a;margin-top:4px}
 .value.good{color:#0d7658}.value.off{color:#9b5a11}.value.bad{color:#b42318}
@@ -47,6 +48,7 @@ h1{font-size:30px;letter-spacing:-.04em;margin:6px 0 8px}h2{font-size:17px;lette
 <div class="card"><div class="label">Pending work</div><div class="value" id="pending">—</div><div class="hint">Changes and retries</div></div>
 <div class="card"><div class="label">New SKU candidates</div><div class="value" id="new">—</div><div class="hint">Found in daily discovery</div></div>
 </div>
+<section class="panel usagepanel" aria-labelledby="usageHeading"><div class="usagehead"><div><h2 id="usageHeading">Cloudflare usage today</h2><p class="muted">Worker requests against the daily Cloudflare allowance.</p></div><div class="usagevalue" id="usageValue">Loading…</div></div><div class="usagebar" role="progressbar" aria-label="Cloudflare request usage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="usageBar"><div class="usagefill" id="usageFill"></div></div><div class="usagefacts"><span id="usageRemaining">Checking requests remaining…</span><span id="usageReset">Resets daily at midnight UTC</span></div></section>
 <section class="panel controlpanel" aria-labelledby="controlHeading"><div class="controlcopy"><div class="controltitle"><h2 id="controlHeading">Sync control</h2><span class="mode off" id="controlState">OFF</span></div><p id="controlMessage">Checking control status…</p><small id="controlHint"></small></div><button id="controlButton" class="controlbutton enable" type="button" disabled hidden>Enable syncing</button></section>
 <section class="panel previewpanel" id="initialPreview" aria-labelledby="initialHeading"><div class="previewhead"><div><h2 id="initialHeading">Initial copy preview</h2><p class="previewnote" id="planDescription">Read-only snapshot: these child-store quantities would be set to the main store quantities during full rollout. Stock may change before then.</p></div><div class="previewactions"><input id="planSearch" class="search" type="search" placeholder="Find SKU" aria-label="Find SKU in initial copy plan"><button class="refresh" id="refreshPlan" type="button" hidden>Refresh stock plan</button></div></div><p class="previewnote" id="planSummary">Loading plan…</p><div id="planRows" class="previewlist"></div></section>
 <section class="panel previewpanel" aria-labelledby="queueHeading"><div class="previewhead"><div><h2 id="queueHeading">Pending work preview</h2><p class="previewnote">Queued Shopify changes and updates awaiting processing. Estimates use current stock and will be checked again before any update.</p></div><button class="refresh" id="refreshPreview" type="button">Check current stock</button></div><p class="previewnote" id="queueSummary">Loading queue…</p><div id="queueRows" class="previewlist"></div></section>
@@ -62,6 +64,7 @@ h1{font-size:30px;letter-spacing:-.04em;margin:6px 0 8px}h2{font-size:17px;lette
 </main><script nonce="${nonce}">
 const el=id=>document.getElementById(id);let data=null,plan=null,preview=null,filter='all',loading=false,previewLoading=false,retryTimer=null,sessionFailures=0;
 const date=value=>value?new Date(value).toLocaleString(): 'Not yet recorded';
+const number=value=>Number(value).toLocaleString();
 const names={webhook:'Order or stock change received',change:'Stock change detected',write:'Quantity updated',sync:'Inventory change copied',
   bootstrap:'SKU initialized',auto_enroll:'New SKU enrolled',discovery:'Daily SKU check',
   scan_complete:'Backup scan completed',scan_error:'SKU check failed',retry:'Update will retry',
@@ -138,6 +141,11 @@ function render(){if(!data)return;const s=data.status,c=data.control;el('live').
   renderRows('activity',rows,'No events match this view.');renderQueue();renderPlan();}
 async function viewerRequest(path,method='GET'){const request=async()=>fetch(path,{method,headers:{Authorization:'Bearer '+await window.shopify.idToken()},cache:'no-store'});
   let res=await request();if(res.status===401)res=await request();if(!res.ok){const body=await res.json().catch(()=>({}));throw Error(body.error||'Preview unavailable ('+res.status+').')}return res.json()}
+async function loadUsage(){try{const usage=await viewerRequest('/viewer/usage');const percent=Math.max(0,Math.min(100,usage.percentUsed));
+  el('usageValue').textContent=number(usage.requests)+' / '+number(usage.limit)+' requests ('+percent.toFixed(percent<10?2:1)+'%)';
+  el('usageRemaining').textContent=number(usage.remaining)+' requests remaining · '+number(usage.errors)+' errors today';
+  el('usageReset').textContent='Resets '+date(usage.resetAt);el('usageFill').style.width=Math.max(percent,.15)+'%';el('usageFill').className='usagefill '+(percent>=90?'bad':percent>=70?'warn':'');el('usageBar').setAttribute('aria-valuenow',percent.toFixed(2));
+  }catch(error){el('usageValue').textContent='Unavailable';el('usageRemaining').textContent=error.message;}}
 async function dismissProblem(id,button){button.disabled=true;button.textContent='Dismissing…';try{const request=async()=>fetch('/viewer/attention',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+await window.shopify.idToken()},body:JSON.stringify({id}),cache:'no-store'});
   let res=await request();if(res.status===401)res=await request();if(!res.ok){const body=await res.json().catch(()=>({}));throw Error(body.error||'Could not dismiss alert')}
   await load()}catch(error){button.disabled=false;button.textContent='Dismiss';el('problemCount').textContent=error.message}}
@@ -152,7 +160,7 @@ async function load(){if(loading)return;loading=true;const btn=el('refresh');btn
       if(!retryTimer)retryTimer=setTimeout(()=>{retryTimer=null;load()},10000)
     }else{el('banner').className='errorbox';el('banner').textContent=err.message}}
   finally{loading=false;btn.disabled=false}}
-el('refresh').addEventListener('click',async()=>{await load();if(!data?.status?.initialCopyCompletedAt)loadPlan();loadPreview()});el('search').addEventListener('input',render);el('planSearch').addEventListener('input',renderPlan);
+el('refresh').addEventListener('click',async()=>{await Promise.all([load(),loadUsage()]);if(!data?.status?.initialCopyCompletedAt)loadPlan();loadPreview()});el('search').addEventListener('input',render);el('planSearch').addEventListener('input',renderPlan);
 el('refreshPlan').addEventListener('click',()=>loadPlan(true));el('refreshPreview').addEventListener('click',loadPreview);
 el('controlButton').addEventListener('click',async()=>{if(!data?.control?.canManage||!data.control.rolloutReady)return;
   const action=data.control.active?'pause':'resume',button=el('controlButton');button.disabled=true;button.textContent=action==='pause'?'Pausing…':'Enabling…';
@@ -161,6 +169,6 @@ el('controlButton').addEventListener('click',async()=>{if(!data?.control?.canMan
     const result=await res.json();data.control=result.control;data.status.active=result.control.active;render();await load()
   }catch(err){el('controlMessage').textContent=err.message;button.disabled=false;button.textContent=action==='pause'?'Pause syncing':'Enable syncing'}});
 for(const tab of document.querySelectorAll('.tab'))tab.addEventListener('click',()=>{filter=tab.dataset.filter;for(const t of document.querySelectorAll('.tab'))t.classList.toggle('active',t===tab);render()});
-load().then(()=>{if(data){if(!data.status.initialCopyCompletedAt)loadPlan();loadPreview()}});setInterval(load,45000);
+Promise.all([load(),loadUsage()]).then(()=>{if(data){if(!data.status.initialCopyCompletedAt)loadPlan();loadPreview()}});setInterval(load,45000);setInterval(loadUsage,300000);
 </script></body></html>`;
 }

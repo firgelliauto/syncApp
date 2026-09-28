@@ -11,7 +11,10 @@
     "SYNC_ENABLED": "true",
     "ALLOW_INVENTORY_WRITES": "true",
     "FULL_ROLLOUT_COMPLETE": "true",
-    "AUTO_ENROLL_NEW_SKUS": "true"
+    "AUTO_ENROLL_NEW_SKUS": "true",
+    "CLOUDFLARE_ACCOUNT_ID": "b74fac168ae67c00ce65cced1528bf50",
+    "CLOUDFLARE_WORKER_NAME": "firgelli-inventory-sync",
+    "CLOUDFLARE_DAILY_REQUEST_LIMIT": "100000"
   },
   "durable_objects": {
     "bindings": [
@@ -25,7 +28,7 @@
   "secrets": {
     "required": [
       "MAIN_CLIENT_ID", "MAIN_CLIENT_SECRET", "CHILD_CLIENT_ID",
-      "CHILD_CLIENT_SECRET", "ADMIN_TOKEN"
+      "CHILD_CLIENT_SECRET", "ADMIN_TOKEN", "CLOUDFLARE_ANALYTICS_TOKEN"
     ]
   }
 }

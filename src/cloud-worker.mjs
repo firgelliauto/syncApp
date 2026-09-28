@@ -14,6 +14,46 @@ import { canManageSync, rolloutReady, syncActive } from './sync-control.mjs';
 
 const INSTANCE = 'firgelli-inventory-sync';
 const json = (value, status = 200) => Response.json(value, { status });
+let usageCache = null;
+
+async function cloudflareUsage(env) {
+  if (usageCache && Date.now() - usageCache.cachedAt < 5 * 60_000) return usageCache.value;
+  if (!env.CLOUDFLARE_ANALYTICS_TOKEN || !env.CLOUDFLARE_ACCOUNT_ID) {
+    throw new Error('Cloudflare analytics is not connected');
+  }
+  const now = new Date();
+  const start = new Date(now); start.setUTCHours(0, 0, 0, 0);
+  const reset = new Date(start); reset.setUTCDate(reset.getUTCDate() + 1);
+  const query = `query GetWorkersAnalytics($accountTag: string, $datetimeStart: string, $datetimeEnd: string, $scriptName: string) {
+    viewer { accounts(filter: {accountTag: $accountTag}) {
+      workersInvocationsAdaptive(limit: 10000, filter: {scriptName: $scriptName,
+        datetime_geq: $datetimeStart, datetime_leq: $datetimeEnd}) {
+        sum { requests errors subrequests }
+      }
+    } }
+  }`;
+  const response = await fetch('https://api.cloudflare.com/client/v4/graphql', {
+    method: 'POST', headers: { Authorization: `Bearer ${env.CLOUDFLARE_ANALYTICS_TOKEN}`,
+      'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, variables: { accountTag: env.CLOUDFLARE_ACCOUNT_ID,
+      datetimeStart: start.toISOString(), datetimeEnd: now.toISOString(),
+      scriptName: env.CLOUDFLARE_WORKER_NAME ?? INSTANCE } })
+  });
+  if (!response.ok) throw new Error(`Cloudflare analytics returned ${response.status}`);
+  const payload = await response.json();
+  if (payload.errors?.length) throw new Error(payload.errors[0].message ?? 'Cloudflare analytics query failed');
+  const rows = payload.data?.viewer?.accounts?.[0]?.workersInvocationsAdaptive ?? [];
+  const totals = rows.reduce((sum, row) => ({ requests: sum.requests + (row.sum?.requests ?? 0),
+    errors: sum.errors + (row.sum?.errors ?? 0),
+    subrequests: sum.subrequests + (row.sum?.subrequests ?? 0) }),
+  { requests: 0, errors: 0, subrequests: 0 });
+  const limit = Number(env.CLOUDFLARE_DAILY_REQUEST_LIMIT) || 100_000;
+  const value = { ...totals, limit, remaining: Math.max(0, limit - totals.requests),
+    percentUsed: Math.min(100, totals.requests / limit * 100), resetAt: reset.toISOString(),
+    checkedAt: now.toISOString(), source: 'Cloudflare Workers Analytics' };
+  usageCache = { cachedAt: Date.now(), value };
+  return value;
+}
 
 function binding(env) {
   return env.SYNC_STATE.get(env.SYNC_STATE.idFromName(INSTANCE));
@@ -78,7 +118,7 @@ export default {
         active: state.active, autoEnrollmentEnabled: state.autoEnrollmentEnabled });
     }
     const stub = binding(env);
-    if ((request.method === 'GET' && ['/viewer/overview', '/viewer/plan', '/viewer/preview'].includes(url.pathname)) ||
+    if ((request.method === 'GET' && ['/viewer/overview', '/viewer/plan', '/viewer/preview', '/viewer/usage'].includes(url.pathname)) ||
         (request.method === 'POST' && url.pathname === '/viewer/plan') ||
         (request.method === 'POST' && ['/viewer/control', '/viewer/attention'].includes(url.pathname))) {
       const authorization = request.headers.get('authorization') ?? '';
@@ -92,7 +132,10 @@ export default {
       }
       if (url.pathname === '/viewer/plan' && request.method === 'POST' && !canManage) return json({ error: 'Not allowed' }, 403);
       let result;
-      if (url.pathname === '/viewer/attention') {
+      if (url.pathname === '/viewer/usage') {
+        try { return json(await cloudflareUsage(env)); }
+        catch (error) { return json({ error: error.message }, 503); }
+      } else if (url.pathname === '/viewer/attention') {
         if (Number(request.headers.get('content-length') ?? 0) > 1000) return json({ error: 'Request too large' }, 413);
         let input;
         try {
