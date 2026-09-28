@@ -33,6 +33,7 @@ h1{font-size:30px;letter-spacing:-.04em;margin:6px 0 8px}h2{font-size:17px;lette
 .list{border-top:1px solid #edf0f2}.entry{display:grid;grid-template-columns:115px minmax(0,1fr) auto;gap:14px;align-items:start;padding:14px 0;border-bottom:1px solid #edf0f2}.entry:last-child{border-bottom:0}
 .badge{display:inline-block;padding:5px 8px;border-radius:6px;background:#eff5f3;color:#14735b;font-size:11px;font-weight:750;text-transform:uppercase;letter-spacing:.04em}.badge.warning{background:#fff2dc;color:#8b5a0b}.badge.error{background:#fdecea;color:#b42318}
 .entry strong{display:block;font-size:13px;line-height:1.4}.entry small{display:block;color:#65717b;font-size:12px;margin-top:4px;line-height:1.45}.time{font-size:11px;color:#7d8790;white-space:nowrap}
+.entryactions{display:flex;flex-direction:column;align-items:flex-end;gap:7px}.dismiss{border:1px solid #cdd5d9;border-radius:7px;background:#fff;color:#52616d;padding:5px 9px;font:inherit;font-size:11px;font-weight:700;cursor:pointer}.dismiss:hover{background:#edf4f5}.dismiss:disabled{opacity:.5;cursor:wait}
 .empty{padding:28px 0;text-align:center;color:#687681;font-size:13px}.errorbox{background:#fdecea;color:#a42920;border:1px solid #f1c5bf;border-radius:9px;padding:13px 15px;font-size:13px}
 .previewpanel{margin-bottom:18px}.previewhead{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}.previewlist{max-height:340px;overflow:auto}.previewrow{display:grid;grid-template-columns:minmax(120px,1fr) minmax(0,2fr);gap:12px;padding:10px 0;border-bottom:1px solid #edf0f2;font-size:12px}.previewrow strong{overflow-wrap:anywhere}.previewrow span{text-align:right;color:#52616d}.previewactions{display:flex;gap:9px;align-items:center;flex-wrap:wrap}.previewactions .search{width:160px}.previewnote{font-size:12px;margin:10px 0;color:#65717d}
 @media(max-width:860px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.two{grid-template-columns:1fr}}
@@ -67,14 +68,17 @@ const names={webhook:'Stock change received',change:'Stock change detected',writ
   cloud_error:'App operation failed',worker_error:'Sync worker failed',auto_enroll_error:'New SKU enrollment failed',
   sync_paused:'Sync paused',sync_resumed:'Sync enabled',catalog_staged:'Catalog staged',
   ambiguous_change:'Both stores changed; SKU blocked',conflict_approved:'Separate orders confirmed',
-  mirror_rebaselined:'Mirrored main-store order recorded once',shadow_baseline:'Read-only baseline refreshed'};
+  mirror_rebaselined:'Mirrored main-store order recorded once',shadow_baseline:'Read-only baseline refreshed',
+  alert_dismissed:'Alert dismissed'};
 function node(tag,className,text){const e=document.createElement(tag);if(className)e.className=className;if(text!==undefined)e.textContent=String(text);return e}
 function line(e){const title=names[e.type]||e.type;const sku=e.sku?' · '+e.sku:'';const side=e.side==='main'?'Main store':e.side==='child'?'Child store':'';
   const quantity=e.from_qty!==null&&e.to_qty!==null?' · '+e.from_qty+' → '+e.to_qty:'';
   return {title:title+sku,detail:[side+quantity,e.message].filter(Boolean).join(' · ')};}
 function renderRows(target,rows,empty){const box=el(target);box.replaceChildren();if(!rows.length){box.append(node('div','empty',empty));return}
   for(const e of rows){const row=node('div','entry');row.append(node('span','badge '+(e.level==='error'?'error':e.level==='warning'?'warning':''),e.level));
-    const body=node('div');const info=line(e);body.append(node('strong','',info.title));if(info.detail)body.append(node('small','',info.detail));row.append(body,node('span','time',date(e.at)));box.append(row)}}
+    const body=node('div');const info=line(e);body.append(node('strong','',info.title));if(info.detail)body.append(node('small','',info.detail));const actions=node('div','entryactions');actions.append(node('span','time',date(e.at)));
+    if(target==='problems'&&e.dismissable){const button=node('button','dismiss','Dismiss');button.type='button';button.title='Hide this resolved alert from Needs attention. It remains in Activity history.';button.addEventListener('click',()=>dismissProblem(e.id,button));actions.append(button)}
+    row.append(body,actions);box.append(row)}}
 function previewRow(target,sku,detail){const row=node('div','previewrow');row.append(node('strong','',sku),node('span','',detail));target.append(row)}
 function renderPlan(){const box=el('planRows');box.replaceChildren();if(!plan?.planId){el('planSummary').textContent='No stock plan has been generated yet. Refresh the stock plan to preview it.';return}
   const staged=Boolean(plan.stagedAt);el('planDescription').textContent=staged?'Staged baseline, with no Shopify inventory changes yet. When you enable syncing, queued differences and newer stock changes will be reconciled using current quantities.':'Read-only snapshot: these child-store quantities would be set to the main store quantities during full rollout. Stock may change before then.';
@@ -86,8 +90,10 @@ function renderQueue(){if(!data)return;const box=el('queueRows');box.replaceChil
   const summary=preview?.summary;
   el('queueSummary').textContent=data.status.pendingJobs+' queued events · '+data.status.pendingWrites+' planned updates'+(summary?' · '+summary.childUpdates+' child only · '+summary.mainUpdates+' main only · '+summary.bothUpdates+' both stores · '+summary.ambiguous+' ambiguous · '+summary.noChange+' no change · checked '+date(preview.checkedAt):' · click Check current stock for estimated quantities');
   const bySku=new Map((preview?.rows||[]).map(r=>[r.sku,r]));
-  for(const write of writes)previewRow(box,write.sku,(write.side==='main'?'Main':'Child')+' '+write.from_qty+' → '+write.to_qty+(write.attempts?' · retry '+write.attempts:''));
-  for(const job of jobs){const row=bySku.get(job.sku);let detail=job.event_count+' queued event'+(job.event_count===1?'':'s')+' · '+date(job.created_at);
+  const queued=[...writes.map(write=>({kind:'write',at:Date.parse(write.created_at)||Number(write.next_at)||0,value:write})),
+    ...jobs.map(job=>({kind:'job',at:Date.parse(job.last_at||job.created_at)||0,value:job}))].sort((a,b)=>b.at-a.at);
+  for(const item of queued){if(item.kind==='write'){const write=item.value;previewRow(box,write.sku,(write.side==='main'?'Main':'Child')+' '+write.from_qty+' → '+write.to_qty+(write.attempts?' · retry '+write.attempts:'')+' · '+date(write.created_at||write.next_at||null));continue}
+    const job=item.value,row=bySku.get(job.sku);let detail=job.event_count+' queued event'+(job.event_count===1?'':'s')+' · latest '+date(job.last_at||job.created_at);
     if(row)detail+=' · '+(row.error||row.note||('Main '+row.main+' → '+row.target+'; child '+row.child+' → '+row.target+(row.approved?' · separate orders confirmed':'')));
     previewRow(box,job.sku,detail)}
   if(!jobs.length&&!writes.length)box.append(node('div','empty','No queued stock changes or pending updates.'));
@@ -104,13 +110,17 @@ function render(){if(!data)return;const s=data.status,c=data.control;el('live').
   const controlButton=el('controlButton');controlButton.hidden=!c.canManage;controlButton.textContent=s.active?'Pause syncing':'Enable syncing';controlButton.className='controlbutton '+(s.active?'pause':'enable');controlButton.disabled=!c.rolloutReady||Boolean(c.blockedSkus);
   const activeRetries=data.pendingWrites.filter(w=>w.attempts>0);
   const blocks=(data.blockedSkus||[]).map(b=>({at:b.blocked_at,level:'error',type:'ambiguous_change',sku:b.sku,message:b.reason}));
-  const problems=[...blocks,...activeRetries.map(w=>({at:new Date(w.next_at).toISOString(),level:'error',type:'retry',sku:w.sku,side:w.side,from_qty:w.from_qty,to_qty:w.to_qty,message:w.last_error||'Pending retry'})),...data.problems];
-  el('problemCount').textContent=blocks.length+' blocked · '+activeRetries.length+' active retries';renderRows('problems',problems.slice(0,5),'No recent warnings or failed updates.');
+  const problems=[...blocks,...activeRetries.map(w=>({at:new Date(w.next_at).toISOString(),level:'error',type:'retry',sku:w.sku,side:w.side,from_qty:w.from_qty,to_qty:w.to_qty,message:w.last_error||'Pending retry'})),...data.problems.map(e=>({...e,dismissable:c.canManage}))]
+    .sort((a,b)=>(Date.parse(b.at)||0)-(Date.parse(a.at)||0));
+  el('problemCount').textContent=blocks.length+' blocked · '+activeRetries.length+' active retries · '+data.problems.length+' alerts';renderRows('problems',problems.slice(0,5),'No recent warnings or failed updates.');
   const q=el('search').value.trim().toLowerCase();let rows=data.activity.filter(e=>!q||e.sku?.toLowerCase().includes(q));
   if(filter==='problems')rows=rows.filter(e=>e.level!=='info');if(filter==='changes')rows=rows.filter(e=>['change','write','bootstrap','auto_enroll'].includes(e.type));
   renderRows('activity',rows,'No events match this view.');renderQueue();renderPlan();}
 async function viewerRequest(path,method='GET'){const request=async()=>fetch(path,{method,headers:{Authorization:'Bearer '+await window.shopify.idToken()},cache:'no-store'});
   let res=await request();if(res.status===401)res=await request();if(!res.ok){const body=await res.json().catch(()=>({}));throw Error(body.error||'Preview unavailable ('+res.status+').')}return res.json()}
+async function dismissProblem(id,button){button.disabled=true;button.textContent='Dismissing…';try{const request=async()=>fetch('/viewer/attention',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+await window.shopify.idToken()},body:JSON.stringify({id}),cache:'no-store'});
+  let res=await request();if(res.status===401)res=await request();if(!res.ok){const body=await res.json().catch(()=>({}));throw Error(body.error||'Could not dismiss alert')}
+  await load()}catch(error){button.disabled=false;button.textContent='Dismiss';el('problemCount').textContent=error.message}}
 async function loadPlan(refresh=false){const button=el('refreshPlan');button.disabled=true;try{plan=await viewerRequest('/viewer/plan',refresh?'POST':'GET');renderPlan()}catch(error){el('planSummary').textContent=error.message}finally{button.disabled=false}}
 async function loadPreview(){const button=el('refreshPreview');button.disabled=true;el('queueSummary').textContent='Checking current stock…';try{preview=await viewerRequest('/viewer/preview');renderQueue()}catch(error){el('queueSummary').textContent=error.message}finally{button.disabled=false}}
 async function load(){if(loading)return;loading=true;const btn=el('refresh');btn.disabled=true;try{if(!window.shopify?.idToken)throw Error('Open this page from the installed app in Shopify admin.');

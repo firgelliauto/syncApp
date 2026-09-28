@@ -80,17 +80,30 @@ export default {
     const stub = binding(env);
     if ((request.method === 'GET' && ['/viewer/overview', '/viewer/plan', '/viewer/preview'].includes(url.pathname)) ||
         (request.method === 'POST' && url.pathname === '/viewer/plan') ||
-        (request.method === 'POST' && url.pathname === '/viewer/control')) {
+        (request.method === 'POST' && ['/viewer/control', '/viewer/attention'].includes(url.pathname))) {
       const authorization = request.headers.get('authorization') ?? '';
       const user = authorization.startsWith('Bearer ') ?
         await verifyViewerToken(authorization.slice(7), viewerStores(env), undefined,
           reason => console.warn('Viewer authorization rejected:', reason)) : null;
       if (!user) return invalidSession();
       const canManage = canManageSync(user, env);
-      if (url.pathname === '/viewer/control' && !canManage) return json({ error: 'Not allowed' }, 403);
+      if (['/viewer/control', '/viewer/attention'].includes(url.pathname) && !canManage) {
+        return json({ error: 'Not allowed' }, 403);
+      }
       if (url.pathname === '/viewer/plan' && request.method === 'POST' && !canManage) return json({ error: 'Not allowed' }, 403);
       let result;
-      if (url.pathname === '/viewer/control') {
+      if (url.pathname === '/viewer/attention') {
+        if (Number(request.headers.get('content-length') ?? 0) > 1000) return json({ error: 'Request too large' }, 413);
+        let input;
+        try {
+          const body = await request.text();
+          if (body.length > 1000) return json({ error: 'Request too large' }, 413);
+          input = JSON.parse(body);
+        } catch { return json({ error: 'Invalid JSON' }, 400); }
+        if (!Number.isInteger(input?.id)) return json({ error: 'Invalid alert ID' }, 400);
+        result = await stub.fetch(new Request('https://internal/attention', { method: 'POST',
+          body: JSON.stringify({ id: input.id }) }));
+      } else if (url.pathname === '/viewer/control') {
         if (Number(request.headers.get('content-length') ?? 0) > 1000) return json({ error: 'Request too large' }, 413);
         let input;
         try {
@@ -244,6 +257,12 @@ export class InventorySyncState extends DurableObject {
           }
         } else return json({ error: 'Invalid action' }, 400);
         return json({ control: this.controlStatus(true) });
+      }
+      if (path === '/attention' && request.method === 'POST') {
+        const { id } = await request.json();
+        this.state.dismissProblem(id);
+        this.logActivity({ type: 'alert_dismissed', message: `Historical alert ${id} dismissed in Shopify admin` });
+        return json({ dismissed: true, id });
       }
       if (path === '/webhook' && request.method === 'POST') {
         const { side, deliveryId, payload } = await request.json();

@@ -12,7 +12,7 @@ export function openCloudState(storage) {
       id TEXT PRIMARY KEY, sku TEXT NOT NULL, side TEXT NOT NULL,
       from_qty INTEGER NOT NULL, to_qty INTEGER NOT NULL,
       attempts INTEGER NOT NULL DEFAULT 0, next_at INTEGER NOT NULL DEFAULT 0,
-      last_error TEXT)`,
+      last_error TEXT, created_at TEXT NOT NULL DEFAULT '')`,
     `CREATE TABLE IF NOT EXISTS prepared (
       sku TEXT PRIMARY KEY, main_item TEXT NOT NULL, child_item TEXT NOT NULL,
       main_qty INTEGER NOT NULL, child_qty INTEGER NOT NULL, created_at TEXT NOT NULL)`,
@@ -33,12 +33,17 @@ export function openCloudState(storage) {
       id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, level TEXT NOT NULL,
       type TEXT NOT NULL, sku TEXT, side TEXT, from_qty INTEGER, to_qty INTEGER,
       message TEXT)`,
+    `CREATE TABLE IF NOT EXISTS dismissed_activity (
+      activity_id INTEGER PRIMARY KEY, dismissed_at TEXT NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS operations (
       key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
     'CREATE INDEX IF NOT EXISTS jobs_pending ON jobs(done_at, created_at)',
     'CREATE INDEX IF NOT EXISTS writes_pending ON writes(next_at)',
     'CREATE INDEX IF NOT EXISTS activity_recent ON activity(id DESC)'
   ]) sql.exec(statement);
+  if (!sql.exec('PRAGMA table_info(writes)').toArray().some(column => column.name === 'created_at')) {
+    sql.exec("ALTER TABLE writes ADD COLUMN created_at TEXT NOT NULL DEFAULT ''");
+  }
 
   const one = (query, ...args) => sql.exec(query, ...args).toArray()[0] ?? null;
   const all = (query, ...args) => sql.exec(query, ...args).toArray();
@@ -113,8 +118,8 @@ export function openCloudState(storage) {
         sql.exec('UPDATE skus SET shared_qty = ?, main_qty = ?, child_qty = ? WHERE sku = ?',
           target, snapshot.main, snapshot.child, sku);
         for (const write of writes) sql.exec(
-          'INSERT INTO writes (id, sku, side, from_qty, to_qty) VALUES (?, ?, ?, ?, ?)',
-          write.id, sku, write.side, write.from, write.to);
+          'INSERT INTO writes (id, sku, side, from_qty, to_qty, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+          write.id, sku, write.side, write.from, write.to, new Date().toISOString());
         sql.exec('DELETE FROM approved_conflicts WHERE sku = ?', sku);
       });
     },
@@ -240,11 +245,12 @@ export function openCloudState(storage) {
     removeDiscovered: sku => sql.exec('DELETE FROM discovered_skus WHERE sku = ?', sku),
     pendingCount: () => one('SELECT COUNT(*) AS count FROM jobs WHERE done_at IS NULL').count,
     pendingJobs: (limit = 1000) => all(`SELECT sku, MIN(created_at) AS created_at,
+      MAX(created_at) AS last_at,
       COUNT(*) AS event_count FROM jobs WHERE done_at IS NULL GROUP BY sku
-      ORDER BY created_at LIMIT ?`, limit),
+      ORDER BY last_at DESC, sku LIMIT ?`, limit),
     writeCount: () => one('SELECT COUNT(*) AS count FROM writes').count,
-    pendingWrites: () => all(`SELECT sku, side, from_qty, to_qty, attempts, next_at, last_error
-      FROM writes ORDER BY next_at LIMIT 100`),
+    pendingWrites: () => all(`SELECT sku, side, from_qty, to_qty, attempts, next_at, last_error, created_at
+      FROM writes ORDER BY created_at DESC, rowid DESC LIMIT 100`),
     appendActivity(event) {
       const level = ['info', 'warning', 'error'].includes(event.level) ? event.level : 'info';
       sql.exec(`INSERT INTO activity (at, level, type, sku, side, from_qty, to_qty, message)
@@ -256,10 +262,21 @@ export function openCloudState(storage) {
       sql.exec('DELETE FROM activity WHERE id <= (SELECT MAX(id) - 5000 FROM activity)');
       sql.exec('DELETE FROM activity WHERE at < ?',
         new Date(Date.now() - 90 * 24 * 60 * 60_000).toISOString());
+      sql.exec('DELETE FROM dismissed_activity WHERE activity_id NOT IN (SELECT id FROM activity)');
     },
     recentActivity: (limit = 100) => all('SELECT * FROM activity ORDER BY id DESC LIMIT ?', limit),
-    recentProblems: (limit = 50) => all(`SELECT * FROM activity WHERE level IN ('warning', 'error')
-      ORDER BY id DESC LIMIT ?`, limit),
+    recentProblems: (limit = 50) => all(`SELECT activity.* FROM activity
+      WHERE level IN ('warning', 'error') AND NOT EXISTS
+      (SELECT 1 FROM dismissed_activity WHERE dismissed_activity.activity_id = activity.id)
+      ORDER BY activity.id DESC LIMIT ?`, limit),
+    dismissProblem(id) {
+      if (!Number.isInteger(id) || id < 1) throw new Error('Invalid alert ID');
+      const event = one("SELECT id FROM activity WHERE id = ? AND level IN ('warning', 'error')", id);
+      if (!event) throw new Error('Alert not found');
+      sql.exec('INSERT OR IGNORE INTO dismissed_activity (activity_id, dismissed_at) VALUES (?, ?)',
+        id, new Date().toISOString());
+      return true;
+    },
     isPaused: () => one("SELECT value FROM operations WHERE key = 'operator_paused'")?.value !== 'false',
     setPaused: paused => sql.exec(`INSERT OR REPLACE INTO operations (key, value)
       VALUES ('operator_paused', ?)`, paused ? 'true' : 'false'),

@@ -3,11 +3,10 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { openCloudState } from '../src/cloud-state.mjs';
 
-function cloudState() {
-  const db = new DatabaseSync(':memory:');
+function cloudState(db = new DatabaseSync(':memory:')) {
   const storage = {
     sql: { exec(statement, ...args) {
-      const rows = /^\s*SELECT\b/i.test(statement) ? db.prepare(statement).all(...args) :
+      const rows = /^\s*(SELECT|PRAGMA)\b/i.test(statement) ? db.prepare(statement).all(...args) :
         (args.length ? db.prepare(statement).run(...args) : db.exec(statement), []);
       return { toArray: () => rows };
     } },
@@ -87,5 +86,39 @@ test('fresh shadow baseline replaces stale jobs with current child differences',
       shared_qty: 430, main_qty: 430, child_qty: 430
     });
     assert.equal(state.writeCount(), 0);
+  } finally { db.close(); }
+});
+
+test('pending work is newest first and dismissed alerts stay in activity history', () => {
+  const { state, db } = cloudState();
+  try {
+    state.seed('A', 'main-a', 'child-a', 5);
+    state.seed('B', 'main-b', 'child-b', 5);
+    state.enqueue('older', 'A');
+    state.enqueue('newer', 'B');
+    db.prepare('UPDATE jobs SET created_at = ? WHERE id = ?').run('2026-01-01T00:00:00.000Z', 'older');
+    db.prepare('UPDATE jobs SET created_at = ? WHERE id = ?').run('2026-01-02T00:00:00.000Z', 'newer');
+    assert.deepEqual(state.pendingJobs().map(row => row.sku), ['B', 'A']);
+    state.appendActivity({ level: 'error', type: 'scan_error', sku: 'A', message: 'Temporary failure' });
+    const alert = state.recentProblems()[0];
+    assert.equal(alert.sku, 'A');
+    assert.equal(state.dismissProblem(alert.id), true);
+    assert.deepEqual(state.recentProblems(), []);
+    assert.equal(state.recentActivity()[0].id, alert.id);
+    assert.throws(() => state.dismissProblem(9999), /Alert not found/);
+  } finally { db.close(); }
+});
+
+test('existing pending writes gain a sortable timestamp without losing the queue', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`CREATE TABLE writes (id TEXT PRIMARY KEY, sku TEXT NOT NULL, side TEXT NOT NULL,
+    from_qty INTEGER NOT NULL, to_qty INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+    next_at INTEGER NOT NULL DEFAULT 0, last_error TEXT)`);
+  db.prepare('INSERT INTO writes (id, sku, side, from_qty, to_qty) VALUES (?, ?, ?, ?, ?)')
+    .run('old', 'A', 'child', 2, 1);
+  const { state } = cloudState(db);
+  try {
+    assert.equal(state.pendingWrites()[0].sku, 'A');
+    assert.equal(state.pendingWrites()[0].created_at, '');
   } finally { db.close(); }
 });
