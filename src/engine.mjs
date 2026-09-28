@@ -15,7 +15,8 @@ export function createEngine({ state, shops, locations, onLog = console.log,
     }
     const target = row.shared_qty + (main - row.main_qty) + (child - row.child_qty);
     if (target < 0) {
-      onLog({ type: 'negative_blocked', sku, main, child, target });
+      onLog({ type: 'negative_blocked', sku, main, child, target,
+        message: `Combined stock would be ${target}; no quantity was written` });
       return;
     }
     const writes = [];
@@ -24,7 +25,8 @@ export function createEngine({ state, shops, locations, onLog = console.log,
     state.plan(sku, { main, child }, target, writes);
     if (main !== row.main_qty || child !== row.child_qty) {
       onLog({ type: 'change', sku, mainDelta: main - row.main_qty,
-        childDelta: child - row.child_qty, target });
+        childDelta: child - row.child_qty, target,
+        message: `Main ${main - row.main_qty >= 0 ? '+' : ''}${main - row.main_qty}, child ${child - row.child_qty >= 0 ? '+' : ''}${child - row.child_qty}; shared target ${target}` });
     }
   }
 
@@ -35,15 +37,18 @@ export function createEngine({ state, shops, locations, onLog = console.log,
       await writeQuantity(shops[side], { inventoryItemId: side === 'main' ? row.main_item : row.child_item,
         locationId: locations[side], from: write.from_qty, to: write.to_qty, key: write.id });
       state.completeWrite(write);
-      onLog({ type: 'write', sku: write.sku, side, from: write.from_qty, to: write.to_qty });
+      onLog({ type: 'write', sku: write.sku, side, from: write.from_qty, to: write.to_qty,
+        message: 'Shopify confirmed the inventory update' });
     } catch (error) {
       if (error.codes?.includes('CHANGE_FROM_QUANTITY_STALE')) {
         state.cancelWrites(write.sku);
         state.enqueue(randomUUID(), write.sku);
-        onLog({ type: 'stale', sku: write.sku, side, message: error.message });
+        onLog({ type: 'stale', sku: write.sku, side, from: write.from_qty,
+          to: write.to_qty, message: error.message });
       } else {
         state.retryWrite(write.id, error.message, write.attempts + 1);
-        onLog({ type: 'retry', sku: write.sku, side, message: error.message });
+        onLog({ type: 'retry', sku: write.sku, side, from: write.from_qty,
+          to: write.to_qty, message: error.message });
       }
     }
   }
@@ -53,7 +58,11 @@ export function createEngine({ state, shops, locations, onLog = console.log,
     if (write) { await processWrite(write); return true; }
     const job = state.nextJob();
     if (!job) return false;
-    await scanSku(job.sku);
+    try { await scanSku(job.sku); }
+    catch (error) {
+      onLog({ type: 'scan_error', sku: job.sku, message: error.message });
+      throw error;
+    }
     state.markJobDone(job.id);
     return true;
   }

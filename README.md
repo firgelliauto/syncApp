@@ -19,6 +19,7 @@ The first initialization copies each eligible main quantity to the child. Later 
 - Daily discovery is read-only while `AUTO_ENROLL_NEW_SKUS=false`. It can be inspected through authenticated `GET /admin/discovery`, or refreshed with `POST /admin/discovery/scan`. Automatic enrollment additionally requires `FULL_ROLLOUT_COMPLETE=true`, `SYNC_ENABLED=true`, and `ALLOW_INVENTORY_WRITES=true`. These switches all remain false. When explicitly enabled after the full rollout, it initializes up to five new eligible SKUs per day, copying the main quantity to the child with Shopify's quantity check, then queues a follow-up reconciliation.
 - Every inventory write uses Shopify compare-and-set and an idempotency key. The source store supplies the initial value; after initialization, both stores' quantity changes are combined.
 - One Durable Object instance owns the entire queue. No separate database or server is required.
+- The read-only App Home at the Worker's root path shows sync status, new SKU candidates, active retries, recent failures, and a searchable SKU activity history. Shopify App Bridge supplies a short-lived ID token for each browser request; the Worker verifies its signature and allows only the two configured shops. The operator `ADMIN_TOKEN` is never sent to the browser. Activity begins when this feature is deployed and is retained for up to 90 days or 5,000 events, whichever limit is reached first.
 
 Shopify webhooks are asynchronous. Two simultaneous purchases of the last unit can still oversell before the stores exchange updates. A stock buffer is needed if that risk is unacceptable.
 
@@ -52,6 +53,14 @@ The operator CLI without `--apply` is read-only:
 ```powershell
 node --env-file=.env src/cloud-bootstrap.mjs
 ```
+
+## Read-only Shopify App Home
+
+The Worker serves its dashboard at `https://firgelli-inventory-sync.firgelli-inventory-sync.workers.dev/`. To open it by clicking the installed app in Shopify admin, set the app's **App URL** to that root URL, enable **Embed app in Shopify admin**, and release a new app version in the Dev Dashboard. The Worker must be deployed first. These App Home settings do not change inventory permissions or enable syncing. The current `/health` URL remains a machine health endpoint.
+
+The public HTML shell contains no inventory data. `GET /viewer/overview` requires a signed, unexpired Shopify App Bridge ID token for either configured store and returns only read-only status and history. `/admin/*` remains protected by the separate operator token. Recent failures are historical events; the active retry list shows updates that are still pending. Cloudflare logs remain available for deeper debugging.
+
+During Shopify client-secret rotation, set `WEBHOOK_OLD_CLIENT_SECRET` to the oldest unrevoked secret while `MAIN_CLIENT_SECRET` and `CHILD_CLIENT_SECRET` use the new one. Shopify keeps signing webhooks with the oldest secret until it is revoked. The Worker accepts both during that window; remove the old secret after revocation. Keep all values in ignored env files and Cloudflare secrets.
 
 Do not run multiple competing initializations. `ADMIN_TOKEN` grants operator access; keep it secret and rotate it if exposed. Never put a Shopify client secret in `wrangler.jsonc` or the repository.
 

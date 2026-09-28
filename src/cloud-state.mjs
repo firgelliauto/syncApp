@@ -23,8 +23,15 @@ export function openCloudState(storage) {
     `CREATE TABLE IF NOT EXISTS discovered_skus (
       sku TEXT PRIMARY KEY, main_item TEXT NOT NULL, child_item TEXT NOT NULL,
       main_qty INTEGER NOT NULL, child_qty INTEGER NOT NULL, discovered_at TEXT NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS activity (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, level TEXT NOT NULL,
+      type TEXT NOT NULL, sku TEXT, side TEXT, from_qty INTEGER, to_qty INTEGER,
+      message TEXT)`,
+    `CREATE TABLE IF NOT EXISTS operations (
+      key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
     'CREATE INDEX IF NOT EXISTS jobs_pending ON jobs(done_at, created_at)',
-    'CREATE INDEX IF NOT EXISTS writes_pending ON writes(next_at)'
+    'CREATE INDEX IF NOT EXISTS writes_pending ON writes(next_at)',
+    'CREATE INDEX IF NOT EXISTS activity_recent ON activity(id DESC)'
   ]) sql.exec(statement);
 
   const one = (query, ...args) => sql.exec(query, ...args).toArray()[0] ?? null;
@@ -128,6 +135,27 @@ export function openCloudState(storage) {
     observedMainSkus: () => new Set(all('SELECT sku FROM observed_main_skus').map(row => row.sku)),
     removeDiscovered: sku => sql.exec('DELETE FROM discovered_skus WHERE sku = ?', sku),
     pendingCount: () => one('SELECT COUNT(*) AS count FROM jobs WHERE done_at IS NULL').count,
-    writeCount: () => one('SELECT COUNT(*) AS count FROM writes').count
+    writeCount: () => one('SELECT COUNT(*) AS count FROM writes').count,
+    pendingWrites: () => all(`SELECT sku, side, from_qty, to_qty, attempts, next_at, last_error
+      FROM writes ORDER BY next_at LIMIT 100`),
+    appendActivity(event) {
+      const level = ['info', 'warning', 'error'].includes(event.level) ? event.level : 'info';
+      sql.exec(`INSERT INTO activity (at, level, type, sku, side, from_qty, to_qty, message)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, new Date().toISOString(), level,
+        String(event.type ?? 'event').slice(0, 60), event.sku ?? null, event.side ?? null,
+        Number.isInteger(event.from) ? event.from : null,
+        Number.isInteger(event.to) ? event.to : null,
+        String(event.message ?? '').slice(0, 500));
+      sql.exec('DELETE FROM activity WHERE id <= (SELECT MAX(id) - 5000 FROM activity)');
+      sql.exec('DELETE FROM activity WHERE at < ?',
+        new Date(Date.now() - 90 * 24 * 60 * 60_000).toISOString());
+    },
+    recentActivity: (limit = 100) => all('SELECT * FROM activity ORDER BY id DESC LIMIT ?', limit),
+    recentProblems: (limit = 50) => all(`SELECT * FROM activity WHERE level IN ('warning', 'error')
+      ORDER BY id DESC LIMIT ?`, limit),
+    markCompletedScan: () => sql.exec(`INSERT OR REPLACE INTO operations (key, value)
+      VALUES ('last_completed_scan', ?)`, new Date().toISOString()),
+    lastCompletedScan: () => one(`SELECT value FROM operations
+      WHERE key = 'last_completed_scan'`)?.value ?? null
   };
 }

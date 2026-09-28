@@ -7,6 +7,9 @@ import { loadExcludedSkus } from './exclusions.mjs';
 import { openCloudState } from './cloud-state.mjs';
 import { createEngine } from './engine.mjs';
 import { webhookSku } from './webhook.mjs';
+import { verifyViewerToken } from './viewer-auth.mjs';
+import { viewerPage } from './viewer-page.mjs';
+import { validWebhook } from './webhook-auth.mjs';
 
 const INSTANCE = 'firgelli-inventory-sync';
 const json = (value, status = 200) => Response.json(value, { status });
@@ -43,37 +46,48 @@ function sameToken(actual, expected) {
   return difference === 0;
 }
 
-async function validWebhook(body, signature, secret) {
-  if (!signature || !secret) return false;
-  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  const expected = new Uint8Array(await crypto.subtle.sign('HMAC', key, body));
-  let supplied;
-  try { supplied = Uint8Array.from(atob(signature), char => char.charCodeAt(0)); }
-  catch { return false; }
-  let difference = supplied.length ^ expected.length;
-  for (let i = 0; i < Math.max(supplied.length, expected.length); i++) {
-    difference |= (supplied[i] ?? 0) ^ (expected[i] ?? 0);
-  }
-  return difference === 0;
-}
-
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (request.method === 'GET' && (url.pathname === '/' || url.pathname === '/app')) {
+      const clientId = url.searchParams.get('shop') === env.CHILD_SHOP ?
+        env.CHILD_CLIENT_ID : env.MAIN_CLIENT_ID;
+      const nonce = randomUUID().replaceAll('-', '');
+      return new Response(viewerPage(clientId, nonce), { headers: {
+        'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
+        'Content-Security-Policy': `frame-ancestors https://admin.shopify.com https://*.myshopify.com; base-uri 'none'; object-src 'none'`,
+        'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff'
+      } });
+    }
     if (request.method === 'GET' && url.pathname === '/health') {
       return json({ status: 'ok', syncEnabled: env.SYNC_ENABLED === 'true',
         inventoryWritesEnabled: env.ALLOW_INVENTORY_WRITES === 'true',
         autoEnrollmentEnabled: autoEnrollmentEnabled(env) });
     }
     const stub = binding(env);
+    if (request.method === 'GET' && url.pathname === '/viewer/overview') {
+      const authorization = request.headers.get('authorization') ?? '';
+      const user = authorization.startsWith('Bearer ') ?
+        await verifyViewerToken(authorization.slice(7), [
+          { side: 'main', shop: env.MAIN_SHOP, clientId: env.MAIN_CLIENT_ID,
+            clientSecret: env.MAIN_CLIENT_SECRET, previousSecrets: [env.WEBHOOK_OLD_CLIENT_SECRET] },
+          { side: 'child', shop: env.CHILD_SHOP, clientId: env.CHILD_CLIENT_ID,
+            clientSecret: env.CHILD_CLIENT_SECRET, previousSecrets: [env.WEBHOOK_OLD_CLIENT_SECRET] }
+        ], undefined, reason => console.warn('Viewer authorization rejected:', reason)) : null;
+      if (!user) return json({ error: 'Unauthorized' }, 401);
+      const result = await stub.fetch('https://internal/overview');
+      const response = new Response(result.body, result);
+      response.headers.set('Cache-Control', 'no-store');
+      return response;
+    }
     if (request.method === 'POST' && url.pathname === '/webhooks/inventory') {
       const domain = request.headers.get('x-shopify-shop-domain');
       const side = domain === env.MAIN_SHOP ? 'main' : domain === env.CHILD_SHOP ? 'child' : null;
       const body = await request.arrayBuffer();
       if (body.byteLength > 1_000_000) return json({ error: 'Webhook body too large' }, 413);
+      const currentSecret = side === 'main' ? env.MAIN_CLIENT_SECRET : env.CHILD_CLIENT_SECRET;
       if (!side || !await validWebhook(body, request.headers.get('x-shopify-hmac-sha256'),
-        side === 'main' ? env.MAIN_CLIENT_SECRET : env.CHILD_CLIENT_SECRET)) {
+        [currentSecret, env.WEBHOOK_OLD_CLIENT_SECRET])) {
         return json({ error: 'Invalid webhook' }, 401);
       }
       if (request.headers.get('x-shopify-topic') !== 'inventory_levels/update') return json({ ignored: true });
@@ -116,7 +130,15 @@ export class InventorySyncState extends DurableObject {
     this.shops = shops(env);
     this.locations = locations(env);
     this.engine = createEngine({ state: this.state, shops: this.shops,
-      locations: this.locations, onLog: event => console.log(JSON.stringify(event)) });
+      locations: this.locations, onLog: event => this.logActivity(event) });
+  }
+
+  logActivity(event) {
+    const level = event.level ?? (['retry', 'scan_error', 'auto_enroll_error', 'cloud_error',
+      'worker_error'].includes(event.type) ? 'error' :
+      ['stale', 'negative_blocked'].includes(event.type) ? 'warning' : 'info');
+    this.state.appendActivity({ ...event, level });
+    console.log(JSON.stringify(event));
   }
 
   async fetch(request) {
@@ -128,12 +150,29 @@ export class InventorySyncState extends DurableObject {
         inventoryWritesEnabled: this.env.ALLOW_INVENTORY_WRITES === 'true',
         autoEnrollmentEnabled: this.autoEnrollmentEnabled(),
         discovery: this.state.discoveryStatus() });
+      if (path === '/overview' && request.method === 'GET') {
+        const discovery = this.state.discoveryStatus();
+        return json({ status: {
+          initializedSkus: this.state.skuCount(), pendingJobs: this.state.pendingCount(),
+          pendingWrites: this.state.writeCount(), syncEnabled: this.env.SYNC_ENABLED === 'true',
+          inventoryWritesEnabled: this.env.ALLOW_INVENTORY_WRITES === 'true',
+          discovery: { lastScanAt: discovery.lastScanAt,
+            candidateCount: discovery.candidates.length }
+        }, lastCompletedScan: this.state.lastCompletedScan(),
+        pendingWrites: this.state.pendingWrites(),
+        problems: this.state.recentProblems(20),
+        activity: this.state.recentActivity(150) });
+      }
       if (path === '/webhook' && request.method === 'POST') {
         const { side, deliveryId, payload } = await request.json();
         if (!['main', 'child'].includes(side) || typeof deliveryId !== 'string') return json({ error: 'Invalid event' }, 400);
         const sku = webhookSku(this.state, side, payload, this.locations[side]);
         if (sku) {
-          this.state.enqueue(`${side}:${deliveryId}`, sku);
+          if (this.state.enqueue(`${side}:${deliveryId}`, sku)) {
+            this.logActivity({ type: 'webhook', side, sku,
+              message: this.live() ? 'Shopify reported an inventory change' :
+                'Shopify reported a change while syncing is paused' });
+          }
           if (this.live()) this.scheduleSoon();
         }
         return json({ accepted: true });
@@ -154,7 +193,7 @@ export class InventorySyncState extends DurableObject {
       }
       return json({ error: 'Not found' }, 404);
     } catch (error) {
-      console.error(JSON.stringify({ type: 'cloud_error', path, message: error.message }));
+      this.logActivity({ type: 'cloud_error', message: `${path}: ${error.message}` });
       return json({ error: error.message }, 400);
     }
   }
@@ -175,16 +214,18 @@ export class InventorySyncState extends DurableObject {
 
   async alarm() {
     if (!this.live()) return;
+    let failed = false;
     try {
       for (let i = 0; i < 20 && await this.engine.tick(); i++);
       this.state.pruneJobs();
     } catch (error) {
-      console.error(JSON.stringify({ type: 'worker_error', message: error.message }));
+      failed = true;
+      this.logActivity({ type: 'worker_error', message: error.message });
     } finally {
       const nextWrite = this.state.nextWriteAt();
       const readyJob = this.state.nextJob();
       if (readyJob || nextWrite !== null) {
-        this.ctx.storage.setAlarm(readyJob ? Date.now() + 1000
+        this.ctx.storage.setAlarm(readyJob ? Date.now() + (failed ? 5 * 60_000 : 1000)
           : Math.max(Date.now() + 1000, nextWrite));
       }
     }
@@ -230,6 +271,8 @@ export class InventorySyncState extends DurableObject {
     if (main !== child) await setQuantity(this.shops.child, { inventoryItemId: row.child_item,
       locationId: this.locations.child, from: child, to: main, key: randomUUID() });
     this.state.seed(sku, row.main_item, row.child_item, main);
+    this.logActivity({ type: 'bootstrap', sku, side: 'child', from: child, to: main,
+      message: 'Initialized from the main store' });
     return { sku, seeded: true, childChanged: main !== child, mainQuantity: main,
       previousChildQuantity: child };
   }
@@ -263,16 +306,21 @@ export class InventorySyncState extends DurableObject {
             from: childQuantity, to: mainQuantity, key: randomUUID()
           });
           if (this.state.seed(row.sku, row.mainItem, row.childItem, mainQuantity)) {
+            this.logActivity({ type: 'auto_enroll', sku: row.sku, side: 'child',
+              from: childQuantity, to: mainQuantity,
+              message: 'New SKU initialized from the main store' });
             this.state.enqueue(randomUUID(), row.sku);
             this.scheduleSoon();
             enrolled.push(row.sku);
           }
         } catch (error) {
-          console.error(JSON.stringify({ type: 'auto_enroll_error', sku: row.sku,
-            message: error.message }));
+          this.logActivity({ type: 'auto_enroll_error', sku: row.sku,
+            message: error.message });
         }
       }
     }
+    this.logActivity({ type: 'discovery',
+      message: `${candidates.length} new matching SKU${candidates.length === 1 ? '' : 's'} found; ${enrolled.length} enrolled` });
     return { baselineCreated, observedMainSkus: mainSkus.size,
       candidates: candidates.map(row => row.sku), skipped, enrolled,
       autoEnrollmentEnabled: this.autoEnrollmentEnabled() };
@@ -293,6 +341,7 @@ export class InventorySyncState extends DurableObject {
         this.state.enqueue(randomUUID(), row.sku);
       }
     }
+    this.state.markCompletedScan();
     if (this.state.pendingCount()) this.scheduleSoon();
   }
 }
