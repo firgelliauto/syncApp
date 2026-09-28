@@ -70,9 +70,9 @@ export default {
       const user = authorization.startsWith('Bearer ') ?
         await verifyViewerToken(authorization.slice(7), [
           { side: 'main', shop: env.MAIN_SHOP, clientId: env.MAIN_CLIENT_ID,
-            clientSecret: env.MAIN_CLIENT_SECRET, previousSecrets: [env.WEBHOOK_OLD_CLIENT_SECRET] },
+            clientSecret: env.MAIN_CLIENT_SECRET },
           { side: 'child', shop: env.CHILD_SHOP, clientId: env.CHILD_CLIENT_ID,
-            clientSecret: env.CHILD_CLIENT_SECRET, previousSecrets: [env.WEBHOOK_OLD_CLIENT_SECRET] }
+            clientSecret: env.CHILD_CLIENT_SECRET }
         ], undefined, reason => console.warn('Viewer authorization rejected:', reason)) : null;
       if (!user) return Response.json({ error: 'Invalid Shopify session' }, { status: 401,
         headers: { 'X-Shopify-Retry-Invalid-Session-Request': '1',
