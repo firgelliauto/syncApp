@@ -178,6 +178,36 @@ export function openCloudState(storage) {
       });
       return { stagedAt: now, stagedSkus: rows.length, initialChanges };
     },
+    replaceBaseline(rows) {
+      if (!rows.length || one('SELECT COUNT(*) AS count FROM writes').count) {
+        throw new Error('Cannot replace baseline with an empty catalog or pending writes');
+      }
+      const now = new Date().toISOString();
+      transact(() => {
+        sql.exec('DELETE FROM jobs');
+        sql.exec('DELETE FROM blocked_skus');
+        sql.exec('DELETE FROM approved_conflicts');
+        sql.exec('DELETE FROM skus');
+        sql.exec('DELETE FROM prepared');
+        sql.exec('DELETE FROM discovered_skus');
+        for (const row of rows) {
+          sql.exec(`INSERT INTO skus (sku, main_item, child_item, shared_qty, main_qty, child_qty)
+            VALUES (?, ?, ?, ?, ?, ?)`, row.sku, row.mainItem, row.childItem,
+            row.mainQuantity, row.mainQuantity, row.childQuantity);
+          sql.exec(`INSERT INTO prepared (sku, main_item, child_item, main_qty, child_qty, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)`, row.sku, row.mainItem, row.childItem,
+            row.mainQuantity, row.childQuantity, now);
+          if (row.mainQuantity !== row.childQuantity) sql.exec(
+            'INSERT INTO jobs (id, sku, created_at) VALUES (?, ?, ?)',
+            `baseline:${row.sku}`, row.sku, now);
+        }
+        sql.exec(`INSERT OR REPLACE INTO operations (key, value)
+          VALUES ('initial_staged_at', ?)`, now);
+        sql.exec("DELETE FROM operations WHERE key = 'reconcile_requested'");
+      });
+      return { baselineAt: now, trackedSkus: rows.length,
+        childDifferences: rows.filter(row => row.mainQuantity !== row.childQuantity).length };
+    },
     discoveryStatus: () => ({
       baselineAt: one("SELECT value FROM discovery_meta WHERE key = 'baseline_at'")?.value ?? null,
       lastScanAt: one("SELECT value FROM discovery_meta WHERE key = 'last_scan_at'")?.value ?? null,

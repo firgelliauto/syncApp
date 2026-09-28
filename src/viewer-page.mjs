@@ -67,7 +67,7 @@ const names={webhook:'Stock change received',change:'Stock change detected',writ
   cloud_error:'App operation failed',worker_error:'Sync worker failed',auto_enroll_error:'New SKU enrollment failed',
   sync_paused:'Sync paused',sync_resumed:'Sync enabled',catalog_staged:'Catalog staged',
   ambiguous_change:'Both stores changed; SKU blocked',conflict_approved:'Separate orders confirmed',
-  mirror_rebaselined:'Mirrored main-store order recorded once'};
+  mirror_rebaselined:'Mirrored main-store order recorded once',shadow_baseline:'Read-only baseline refreshed'};
 function node(tag,className,text){const e=document.createElement(tag);if(className)e.className=className;if(text!==undefined)e.textContent=String(text);return e}
 function line(e){const title=names[e.type]||e.type;const sku=e.sku?' · '+e.sku:'';const side=e.side==='main'?'Main store':e.side==='child'?'Child store':'';
   const quantity=e.from_qty!==null&&e.to_qty!==null?' · '+e.from_qty+' → '+e.to_qty:'';

@@ -66,3 +66,26 @@ test('staging records the main baseline and queues differences without inventory
     assert.throws(() => state.stagePrepared(planId), /already staged/);
   } finally { db.close(); }
 });
+
+test('fresh shadow baseline replaces stale jobs with current child differences', () => {
+  const { state, db } = cloudState();
+  try {
+    state.seed('OLD', 'old-main', 'old-child', 433);
+    state.enqueue('stale-event', 'OLD');
+    const result = state.replaceBaseline([
+      { sku: 'OLD', mainItem: 'old-main', childItem: 'old-child',
+        mainQuantity: 430, childQuantity: 430 },
+      { sku: 'DIFF', mainItem: 'diff-main', childItem: 'diff-child',
+        mainQuantity: 12, childQuantity: 15 }
+    ]);
+    assert.equal(result.trackedSkus, 2);
+    assert.equal(result.childDifferences, 1);
+    assert.equal(state.pendingCount(), 1);
+    assert.equal(state.pendingJobs()[0].sku, 'DIFF');
+    assert.deepEqual({ ...state.getSku('OLD') }, {
+      sku: 'OLD', main_item: 'old-main', child_item: 'old-child',
+      shared_qty: 430, main_qty: 430, child_qty: 430
+    });
+    assert.equal(state.writeCount(), 0);
+  } finally { db.close(); }
+});

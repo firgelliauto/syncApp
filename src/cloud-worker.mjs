@@ -137,6 +137,7 @@ export default {
       route === '/preflight' ||
       route === '/discovery') ? request.method === 'GET'
       : (route === '/bootstrap' || route === '/stage' || route === '/resolve' ||
+        route === '/rebaseline-all' ||
         route === '/rebaseline-mirror' ||
         route === '/discovery/scan') ? request.method === 'POST' : false;
     if (!allowed) return json({ error: 'Not found' }, 404);
@@ -285,6 +286,9 @@ export class InventorySyncState extends DurableObject {
       if (path === '/rebaseline-mirror' && request.method === 'POST') {
         const input = await request.json();
         return json(await this.rebaselineMirror(input));
+      }
+      if (path === '/rebaseline-all' && request.method === 'POST') {
+        return json(await this.rebaselineAll());
       }
       if (path === '/reconcile') {
         if (this.live()) await this.reconcile();
@@ -512,6 +516,27 @@ export class InventorySyncState extends DurableObject {
       message: `One main-store order mirrored to both stores (${mainDelta}); saved baseline set to ${main}. No Shopify inventory was changed.` });
     return { sku: row.sku, quantity: main, mirroredChange: mainDelta,
       active: this.live(), inventoryChanged: false };
+  }
+
+  async rebaselineAll() {
+    if (!this.state.isPaused() || this.env.SYNC_ENABLED === 'true' ||
+        this.env.ALLOW_INVENTORY_WRITES === 'true') {
+      throw new Error('Disable sync and inventory writes before taking a fresh baseline');
+    }
+    const [main, child] = await Promise.all([
+      listVariants(this.shops.main, this.locations.main),
+      listVariants(this.shops.child, this.locations.child)
+    ]);
+    const { report, candidates } = buildBootstrapPlan(main, child,
+      { excludedSkus: loadExcludedSkus(), isInitialized: () => false });
+    const candidateSkus = new Set(candidates.map(row => row.sku));
+    const lost = this.state.allSkus().filter(row => !candidateSkus.has(row.sku));
+    if (lost.length) throw new Error(`${lost.length} tracked SKU(s) are no longer eligible; review before replacing baseline`);
+    const result = this.state.replaceBaseline(candidates);
+    this.logActivity({ type: 'shadow_baseline',
+      message: `Read-only baseline refreshed for ${result.trackedSkus} SKUs; ${result.childDifferences} child differences. No Shopify inventory changed.` });
+    return { ...result, skippedCount: report.skipped.length, errors: report.errors,
+      inventoryChanged: false, active: this.live() };
   }
 
   async bootstrapSku(sku, planId) {
