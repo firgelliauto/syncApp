@@ -48,18 +48,19 @@ h1{font-size:30px;letter-spacing:-.04em;margin:6px 0 8px}h2{font-size:17px;lette
 <div class="card"><div class="label">New SKU candidates</div><div class="value" id="new">—</div><div class="hint">Found in daily discovery</div></div>
 </div>
 <section class="panel controlpanel" aria-labelledby="controlHeading"><div class="controlcopy"><div class="controltitle"><h2 id="controlHeading">Sync control</h2><span class="mode off" id="controlState">OFF</span></div><p id="controlMessage">Checking control status…</p><small id="controlHint"></small></div><button id="controlButton" class="controlbutton enable" type="button" disabled hidden>Enable syncing</button></section>
-<section class="panel previewpanel" aria-labelledby="initialHeading"><div class="previewhead"><div><h2 id="initialHeading">Initial copy preview</h2><p class="previewnote" id="planDescription">Read-only snapshot: these child-store quantities would be set to the main store quantities during full rollout. Stock may change before then.</p></div><div class="previewactions"><input id="planSearch" class="search" type="search" placeholder="Find SKU" aria-label="Find SKU in initial copy plan"><button class="refresh" id="refreshPlan" type="button" hidden>Refresh stock plan</button></div></div><p class="previewnote" id="planSummary">Loading plan…</p><div id="planRows" class="previewlist"></div></section>
-<section class="panel previewpanel" aria-labelledby="queueHeading"><div class="previewhead"><div><h2 id="queueHeading">Pending work preview</h2><p class="previewnote">Queued Shopify changes and updates waiting while syncing is off. Estimates use current stock and will be checked again before any update.</p></div><button class="refresh" id="refreshPreview" type="button">Check current stock</button></div><p class="previewnote" id="queueSummary">Loading queue…</p><div id="queueRows" class="previewlist"></div></section>
+<section class="panel previewpanel" id="initialPreview" aria-labelledby="initialHeading"><div class="previewhead"><div><h2 id="initialHeading">Initial copy preview</h2><p class="previewnote" id="planDescription">Read-only snapshot: these child-store quantities would be set to the main store quantities during full rollout. Stock may change before then.</p></div><div class="previewactions"><input id="planSearch" class="search" type="search" placeholder="Find SKU" aria-label="Find SKU in initial copy plan"><button class="refresh" id="refreshPlan" type="button" hidden>Refresh stock plan</button></div></div><p class="previewnote" id="planSummary">Loading plan…</p><div id="planRows" class="previewlist"></div></section>
+<section class="panel previewpanel" aria-labelledby="queueHeading"><div class="previewhead"><div><h2 id="queueHeading">Pending work preview</h2><p class="previewnote">Queued Shopify changes and updates awaiting processing. Estimates use current stock and will be checked again before any update.</p></div><button class="refresh" id="refreshPreview" type="button">Check current stock</button></div><p class="previewnote" id="queueSummary">Loading queue…</p><div id="queueRows" class="previewlist"></div></section>
 <div class="two"><section class="panel"><div class="panelhead"><h2>Connection details</h2></div><div class="facts">
 <div class="fact"><span>Main store</span><b>Firgelli Automation · 1350 Slater Road</b></div>
 <div class="fact"><span>Child store</span><b>Firgelli · Warehouse</b></div>
 <div class="fact"><span>Last daily discovery</span><b id="discovery">—</b></div>
 <div class="fact"><span>Last completed stock scan</span><b id="scan">—</b></div>
+<div class="fact"><span>Initial copy completed</span><b id="initialComplete">—</b></div>
 </div></section><section class="panel"><div class="panelhead"><h2>Needs attention</h2><span class="muted" id="problemCount"></span></div><div id="problems" class="list"></div></section></div>
 <section class="panel"><div class="panelhead"><div><h2>Activity history</h2><p class="muted">Recent events recorded by this app. Times shown in your local time zone.</p></div><span class="muted" id="updated"></span></div>
 <div class="toolbar"><input id="search" class="search" type="search" placeholder="Filter by SKU" aria-label="Filter by SKU"><div class="tabs"><button class="tab active" data-filter="all">All</button><button class="tab" data-filter="problems">Warnings & errors</button><button class="tab" data-filter="changes">Stock changes</button></div></div><div id="activity" class="list"></div></section>
 </main><script nonce="${nonce}">
-const el=id=>document.getElementById(id);let data=null,plan=null,preview=null,filter='all',loading=false,retryTimer=null,sessionFailures=0;
+const el=id=>document.getElementById(id);let data=null,plan=null,preview=null,filter='all',loading=false,previewLoading=false,retryTimer=null,sessionFailures=0;
 const date=value=>value?new Date(value).toLocaleString(): 'Not yet recorded';
 const names={webhook:'Stock change received',change:'Stock change detected',write:'Quantity updated',
   bootstrap:'SKU initialized',auto_enroll:'New SKU enrolled',discovery:'Daily SKU check',
@@ -80,7 +81,7 @@ function renderRows(target,rows,empty){const box=el(target);box.replaceChildren(
     if(target==='problems'&&e.dismissable){const button=node('button','dismiss','Dismiss');button.type='button';button.title='Hide this resolved alert from Needs attention. It remains in Activity history.';button.addEventListener('click',()=>dismissProblem(e.id,button));actions.append(button)}
     row.append(body,actions);box.append(row)}}
 function previewRow(target,sku,detail){const row=node('div','previewrow');row.append(node('strong','',sku),node('span','',detail));target.append(row)}
-function renderPlan(){const box=el('planRows');box.replaceChildren();if(!plan?.planId){el('planSummary').textContent='No stock plan has been generated yet. Refresh the stock plan to preview it.';return}
+function renderPlan(){if(data?.status?.initialCopyCompletedAt)return;const box=el('planRows');box.replaceChildren();if(!plan?.planId){el('planSummary').textContent='No stock plan has been generated yet. Refresh the stock plan to preview it.';return}
   const staged=Boolean(plan.stagedAt);el('planDescription').textContent=staged?'Staged baseline, with no Shopify inventory changes yet. When you enable syncing, queued differences and newer stock changes will be reconciled using current quantities.':'Read-only snapshot: these child-store quantities would be set to the main store quantities during full rollout. Stock may change before then.';
   const changes=plan.changes||[];const eligible=plan.eligible??plan.candidates?.length??0;el('planSummary').textContent=eligible+' matching SKUs · '+changes.length+' initial child differences · '+(eligible-changes.length)+' matched at staging · '+(staged?'staged ':'snapshot ')+date(staged?plan.stagedAt:plan.planId);
   const query=el('planSearch').value.trim().toLowerCase();const filtered=changes.filter(r=>r.sku.toLowerCase().includes(query));
@@ -88,7 +89,8 @@ function renderPlan(){const box=el('planRows');box.replaceChildren();if(!plan?.p
   for(const row of filtered)previewRow(box,row.sku,'Child '+row.childQuantity+' → '+row.mainQuantity+' (main)');}
 function renderQueue(){if(!data)return;const box=el('queueRows');box.replaceChildren();const jobs=data.pendingJobs||[],writes=data.pendingWrites||[];
   const summary=preview?.summary;
-  el('queueSummary').textContent=data.status.pendingJobs+' queued events · '+data.status.pendingWrites+' planned updates'+(summary?' · '+summary.childUpdates+' child only · '+summary.mainUpdates+' main only · '+summary.bothUpdates+' both stores · '+summary.ambiguous+' ambiguous · '+summary.noChange+' no change · checked '+date(preview.checkedAt):' · click Check current stock for estimated quantities');
+  el('refreshPreview').disabled=previewLoading||(!jobs.length&&!writes.length);
+  el('queueSummary').textContent=!jobs.length&&!writes.length?'No pending stock changes or updates.':data.status.pendingJobs+' queued events · '+data.status.pendingWrites+' planned updates'+(summary?' · '+summary.childUpdates+' child only · '+summary.mainUpdates+' main only · '+summary.bothUpdates+' both stores · '+summary.ambiguous+' ambiguous · '+summary.noChange+' no change · checked '+date(preview.checkedAt):' · click Check current stock for estimated quantities');
   const bySku=new Map((preview?.rows||[]).map(r=>[r.sku,r]));
   const queued=[...writes.map(write=>({kind:'write',at:Date.parse(write.created_at)||Number(write.next_at)||0,value:write})),
     ...jobs.map(job=>({kind:'job',at:Date.parse(job.last_at||job.created_at)||0,value:job}))].sort((a,b)=>b.at-a.at);
@@ -96,12 +98,12 @@ function renderQueue(){if(!data)return;const box=el('queueRows');box.replaceChil
     const job=item.value,row=bySku.get(job.sku);let detail=job.event_count+' queued event'+(job.event_count===1?'':'s')+' · latest '+date(job.last_at||job.created_at);
     if(row)detail+=' · '+(row.error||row.note||('Main '+row.main+' → '+row.target+'; child '+row.child+' → '+row.target+(row.approved?' · separate orders confirmed':'')));
     previewRow(box,job.sku,detail)}
-  if(!jobs.length&&!writes.length)box.append(node('div','empty','No queued stock changes or pending updates.'));
   if(data.status.pendingJobs>jobs.reduce((sum,row)=>sum+row.event_count,0))box.append(node('p','previewnote','More queued events exist. The first 1,000 SKUs are shown.'));}
 function render(){if(!data)return;const s=data.status,c=data.control;el('live').textContent=s.active?'On':'Off';el('live').className='value '+(s.active?'good':'bad');
+  el('initialPreview').hidden=Boolean(s.initialCopyCompletedAt);
   el('refreshPlan').hidden=!c.canManage||Boolean(s.initialStagedAt);
   el('tracked').textContent=s.initializedSkus;el('pending').textContent=s.pendingJobs+s.pendingWrites;el('pending').className='value '+(s.pendingJobs+s.pendingWrites?'bad':'good');
-  el('new').textContent=s.discovery.candidateCount;el('discovery').textContent=date(s.discovery.lastScanAt);el('scan').textContent=date(data.lastCompletedScan);
+  el('new').textContent=s.discovery.candidateCount;el('discovery').textContent=date(s.discovery.lastScanAt);el('scan').textContent=date(data.lastCompletedScan);el('initialComplete').textContent=date(s.initialCopyCompletedAt);
   el('updated').textContent='Updated '+new Date().toLocaleTimeString();const banner=el('banner');banner.className='banner '+(s.active?'good':'');
   banner.textContent=s.active?'Live syncing is on. Inventory changes can update the other store.':!s.syncEnabled&&!s.inventoryWritesEnabled?'Observation mode: inventory writes are locked. Shopify changes are logged and previews are read-only.':'Sync is off. Shopify inventory changes are being logged but are not copied between stores.';
   el('controlState').textContent=s.active?'ON':'OFF';el('controlState').className='mode '+(s.active?'on':'off');
@@ -122,17 +124,17 @@ async function dismissProblem(id,button){button.disabled=true;button.textContent
   let res=await request();if(res.status===401)res=await request();if(!res.ok){const body=await res.json().catch(()=>({}));throw Error(body.error||'Could not dismiss alert')}
   await load()}catch(error){button.disabled=false;button.textContent='Dismiss';el('problemCount').textContent=error.message}}
 async function loadPlan(refresh=false){const button=el('refreshPlan');button.disabled=true;try{plan=await viewerRequest('/viewer/plan',refresh?'POST':'GET');renderPlan()}catch(error){el('planSummary').textContent=error.message}finally{button.disabled=false}}
-async function loadPreview(){const button=el('refreshPreview');button.disabled=true;el('queueSummary').textContent='Checking current stock…';try{preview=await viewerRequest('/viewer/preview');renderQueue()}catch(error){el('queueSummary').textContent=error.message}finally{button.disabled=false}}
+async function loadPreview(){if(previewLoading||!data)return;if(!data.status.pendingJobs&&!data.status.pendingWrites){preview=null;renderQueue();return}previewLoading=true;const button=el('refreshPreview');button.disabled=true;el('queueSummary').textContent='Checking current stock…';try{preview=await viewerRequest('/viewer/preview');renderQueue()}catch(error){el('queueSummary').textContent=error.message}finally{previewLoading=false;button.disabled=!data.status.pendingJobs&&!data.status.pendingWrites}}
 async function load(){if(loading)return;loading=true;const btn=el('refresh');btn.disabled=true;try{if(!window.shopify?.idToken)throw Error('Open this page from the installed app in Shopify admin.');
   const request=async()=>fetch('/viewer/overview',{headers:{Authorization:'Bearer '+await window.shopify.idToken()},cache:'no-store'});
   let res=await request();if(res.status===401)res=await request();
   if(!res.ok){const err=Error(res.status===401?'Shopify session could not be refreshed. Reopen the app from Shopify admin.':'Status is temporarily unavailable ('+res.status+').');err.session=res.status===401;throw err}
-  data=await res.json();sessionFailures=0;if(retryTimer){clearTimeout(retryTimer);retryTimer=null}render()
+  data=await res.json();if(!data.status.pendingJobs&&!data.status.pendingWrites)preview=null;sessionFailures=0;if(retryTimer){clearTimeout(retryTimer);retryTimer=null}render()
   }catch(err){if(err.session&&++sessionFailures<6){if(data)el('updated').textContent='Refreshing Shopify session…';else{el('banner').className='banner';el('banner').textContent='Refreshing Shopify session…'}
       if(!retryTimer)retryTimer=setTimeout(()=>{retryTimer=null;load()},10000)
     }else{el('banner').className='errorbox';el('banner').textContent=err.message}}
   finally{loading=false;btn.disabled=false}}
-el('refresh').addEventListener('click',()=>{load();loadPlan();loadPreview()});el('search').addEventListener('input',render);el('planSearch').addEventListener('input',renderPlan);
+el('refresh').addEventListener('click',async()=>{await load();if(!data?.status?.initialCopyCompletedAt)loadPlan();loadPreview()});el('search').addEventListener('input',render);el('planSearch').addEventListener('input',renderPlan);
 el('refreshPlan').addEventListener('click',()=>loadPlan(true));el('refreshPreview').addEventListener('click',loadPreview);
 el('controlButton').addEventListener('click',async()=>{if(!data?.control?.canManage||!data.control.rolloutReady)return;
   const action=data.control.active?'pause':'resume',button=el('controlButton');button.disabled=true;button.textContent=action==='pause'?'Pausing…':'Enabling…';
@@ -141,6 +143,6 @@ el('controlButton').addEventListener('click',async()=>{if(!data?.control?.canMan
     const result=await res.json();data.control=result.control;data.status.active=result.control.active;render();await load()
   }catch(err){el('controlMessage').textContent=err.message;button.disabled=false;button.textContent=action==='pause'?'Pause syncing':'Enable syncing'}});
 for(const tab of document.querySelectorAll('.tab'))tab.addEventListener('click',()=>{filter=tab.dataset.filter;for(const t of document.querySelectorAll('.tab'))t.classList.toggle('active',t===tab);render()});
-load().then(()=>{if(data){loadPlan();loadPreview()}});setInterval(load,45000);
+load().then(()=>{if(data){if(!data.status.initialCopyCompletedAt)loadPlan();loadPreview()}});setInterval(load,45000);
 </script></body></html>`;
 }

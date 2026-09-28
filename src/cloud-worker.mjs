@@ -204,11 +204,13 @@ export class InventorySyncState extends DurableObject {
         discovery: this.state.discoveryStatus() });
       if (path === '/overview' && request.method === 'GET') {
         const discovery = this.state.discoveryStatus();
+        const initialCopyCompletedAt = this.initialCopyCompletedAt();
         return json({ status: {
           initializedSkus: this.state.skuCount(), pendingJobs: this.state.pendingCount(),
           pendingWrites: this.state.writeCount(), syncEnabled: this.env.SYNC_ENABLED === 'true',
           inventoryWritesEnabled: this.env.ALLOW_INVENTORY_WRITES === 'true',
           active: this.live(), initialStagedAt: this.state.initialStagedAt(),
+          initialCopyCompletedAt,
           discovery: { lastScanAt: discovery.lastScanAt,
             candidateCount: discovery.candidates.length }
         }, control: this.controlStatus(url.searchParams.get('canManage') === '1'),
@@ -332,6 +334,13 @@ export class InventorySyncState extends DurableObject {
     return this.live() && this.env.AUTO_ENROLL_NEW_SKUS === 'true';
   }
 
+  initialCopyCompletedAt() {
+    if (this.live() && this.state.initialStagedAt() && this.state.lastCompletedScan() &&
+        !this.state.pendingCount() && !this.state.writeCount() &&
+        !this.state.initialCopyCompletedAt()) this.state.markInitialCopyCompleted();
+    return this.state.initialCopyCompletedAt();
+  }
+
   controlStatus(canManage = false) {
     return { active: this.live(), paused: this.state.isPaused(),
       rolloutReady: this.ready(), blockedSkus: this.state.blockedCount(), canManage };
@@ -384,6 +393,7 @@ export class InventorySyncState extends DurableObject {
         this.state.clearReconcileRequest();
       }
       for (let i = 0; i < 20 && this.live() && await this.engine.tick(); i++);
+      this.initialCopyCompletedAt();
       this.state.pruneJobs();
     } catch (error) {
       failed = true;
@@ -425,6 +435,9 @@ export class InventorySyncState extends DurableObject {
   async pendingPreview() {
     const jobs = this.state.pendingJobs();
     const rows = [];
+    if (!jobs.length) return { checkedAt: new Date().toISOString(), totalEvents: 0,
+      previewedSkus: 0, summary: { pendingSkus: 0, noChange: 0, childUpdates: 0,
+        mainUpdates: 0, bothUpdates: 0, ambiguous: 0, errors: 0 }, rows };
     const [mainCatalog, childCatalog] = await Promise.all([
       listVariants(this.shops.main, this.locations.main),
       listVariants(this.shops.child, this.locations.child)

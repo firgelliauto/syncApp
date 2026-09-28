@@ -287,6 +287,10 @@ export function openCloudState(storage) {
     markCompletedScan: () => sql.exec(`INSERT OR REPLACE INTO operations (key, value)
       VALUES ('last_completed_scan', ?)`, new Date().toISOString()),
     lastCompletedScan: () => one(`SELECT value FROM operations
-      WHERE key = 'last_completed_scan'`)?.value ?? null
+      WHERE key = 'last_completed_scan'`)?.value ?? null,
+    initialCopyCompletedAt: () => one(`SELECT value FROM operations
+      WHERE key = 'initial_copy_completed_at'`)?.value ?? null,
+    markInitialCopyCompleted: () => sql.exec(`INSERT OR IGNORE INTO operations (key, value)
+      VALUES ('initial_copy_completed_at', ?)`, new Date().toISOString())
   };
 }

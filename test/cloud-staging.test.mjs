@@ -122,3 +122,16 @@ test('existing pending writes gain a sortable timestamp without losing the queue
     assert.equal(state.pendingWrites()[0].created_at, '');
   } finally { db.close(); }
 });
+
+test('initial-copy completion is recorded once and survives later work', () => {
+  const { state, db } = cloudState();
+  try {
+    assert.equal(state.initialCopyCompletedAt(), null);
+    state.markInitialCopyCompleted();
+    const completedAt = state.initialCopyCompletedAt();
+    assert.ok(completedAt);
+    state.enqueue('later-order', 'SKU');
+    state.markInitialCopyCompleted();
+    assert.equal(state.initialCopyCompletedAt(), completedAt);
+  } finally { db.close(); }
+});
