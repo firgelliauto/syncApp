@@ -78,7 +78,8 @@ export default {
         active: state.active, autoEnrollmentEnabled: state.autoEnrollmentEnabled });
     }
     const stub = binding(env);
-    if ((request.method === 'GET' && url.pathname === '/viewer/overview') ||
+    if ((request.method === 'GET' && ['/viewer/overview', '/viewer/plan', '/viewer/preview'].includes(url.pathname)) ||
+        (request.method === 'POST' && url.pathname === '/viewer/plan') ||
         (request.method === 'POST' && url.pathname === '/viewer/control')) {
       const authorization = request.headers.get('authorization') ?? '';
       const user = authorization.startsWith('Bearer ') ?
@@ -87,6 +88,7 @@ export default {
       if (!user) return invalidSession();
       const canManage = canManageSync(user, env);
       if (url.pathname === '/viewer/control' && !canManage) return json({ error: 'Not allowed' }, 403);
+      if (url.pathname === '/viewer/plan' && request.method === 'POST' && !canManage) return json({ error: 'Not allowed' }, 403);
       let result;
       if (url.pathname === '/viewer/control') {
         if (Number(request.headers.get('content-length') ?? 0) > 1000) return json({ error: 'Request too large' }, 413);
@@ -99,6 +101,8 @@ export default {
         if (!['pause', 'resume'].includes(input?.action)) return json({ error: 'Invalid action' }, 400);
         result = await stub.fetch(new Request('https://internal/control', { method: 'POST',
           body: JSON.stringify({ action: input.action }) }));
+      } else if (url.pathname === '/viewer/plan' || url.pathname === '/viewer/preview') {
+        result = await stub.fetch(new Request(`https://internal${url.pathname.slice('/viewer'.length)}`, { method: request.method }));
       } else {
         result = await stub.fetch(`https://internal/overview?canManage=${canManage ? '1' : '0'}`);
       }
@@ -192,9 +196,13 @@ export class InventorySyncState extends DurableObject {
         }, control: this.controlStatus(url.searchParams.get('canManage') === '1'),
         lastCompletedScan: this.state.lastCompletedScan(),
         pendingWrites: this.state.pendingWrites(),
+        pendingJobs: this.state.pendingJobs(),
         problems: this.state.recentProblems(20),
         activity: this.state.recentActivity(150) });
       }
+      if (path === '/plan' && request.method === 'GET') return json(this.prepared());
+      if (path === '/plan' && request.method === 'POST') return json(await this.prepare());
+      if (path === '/preview' && request.method === 'GET') return json(await this.pendingPreview());
       if (path === '/control' && request.method === 'POST') {
         const { action } = await request.json();
         if (action === 'resume') {
@@ -304,10 +312,34 @@ export class InventorySyncState extends DurableObject {
 
   prepared() {
     const rows = this.state.listPrepared();
-    return { planId: rows[0]?.created_at ?? null, candidates: rows.map(({ sku }) => sku),
+    return { planId: rows[0]?.created_at ?? null, eligible: rows.length,
+      candidates: rows.map(({ sku }) => sku),
       changes: rows.filter(row => row.main_qty !== row.child_qty).map(row => ({
         sku: row.sku, mainQuantity: row.main_qty, childQuantity: row.child_qty
       })) };
+  }
+
+  async pendingPreview() {
+    const jobs = this.state.pendingJobs(20);
+    const rows = [];
+    for (const job of jobs) {
+      const sku = this.state.getSku(job.sku);
+      if (!sku) { rows.push({ sku: job.sku, error: 'SKU is not tracked' }); continue; }
+      if (this.state.hasWrite(job.sku)) { rows.push({ sku: job.sku,
+        note: 'An earlier planned update is waiting; see pending writes.' }); continue; }
+      try {
+        const [main, child] = await Promise.all([
+          getQuantity(this.shops.main, sku.main_item, this.locations.main, sku.sku),
+          getQuantity(this.shops.child, sku.child_item, this.locations.child, sku.sku)
+        ]);
+        if (!Number.isInteger(main) || !Number.isInteger(child)) throw new Error('Inventory level unavailable');
+        const target = sku.shared_qty + (main - sku.main_qty) + (child - sku.child_qty);
+        rows.push({ sku: job.sku, main, child, target, mainChange: target - main,
+          childChange: target - child, error: target < 0 ? 'Combined stock would be negative; update blocked' : null });
+      } catch (error) { rows.push({ sku: job.sku, error: error.message }); }
+    }
+    return { checkedAt: new Date().toISOString(), totalEvents: this.state.pendingCount(),
+      previewedSkus: rows.length, rows };
   }
 
   async bootstrapSku(sku, planId) {

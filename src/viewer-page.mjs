@@ -25,7 +25,7 @@ h1{font-size:30px;letter-spacing:-.04em;margin:6px 0 8px}h2{font-size:17px;lette
 .mode{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:5px 10px;font-size:11px;font-weight:800;letter-spacing:.05em}
 .mode::before{content:'';width:7px;height:7px;border-radius:50%;background:currentColor}.mode.on{color:#087450;background:#e6f6ef}.mode.off{color:#a32e26;background:#fdecea}
 .controlbutton{border:0;border-radius:9px;padding:11px 16px;min-width:155px;font:inherit;font-size:13px;font-weight:750;color:#fff;cursor:pointer;white-space:nowrap}
-.controlbutton.enable{background:#087f5b}.controlbutton.enable:hover{background:#076a4d}.controlbutton.pause{background:#b42318}.controlbutton.pause:hover{background:#971c13}
+.controlbutton.enable{background:#087f5b}.controlbutton.enable:hover{background:#0a9e70}.controlbutton.pause{background:#b42318}.controlbutton.pause:hover{background:#971c13}
 .controlbutton:disabled{background:#d7dde0;color:#68747c;cursor:not-allowed}.controlbutton[hidden]{display:none}
 .two{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:18px}.panel{padding:22px}.panelhead{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:15px}.muted{font-size:12px;color:#71808a}
 .facts{display:grid;grid-template-columns:1fr 1fr;gap:12px}.fact{border-top:1px solid #eff1f2;padding-top:10px}.fact b{display:block;font-size:13px;margin-top:3px}.fact span{font-size:11px;color:#6b7580}
@@ -34,6 +34,7 @@ h1{font-size:30px;letter-spacing:-.04em;margin:6px 0 8px}h2{font-size:17px;lette
 .badge{display:inline-block;padding:5px 8px;border-radius:6px;background:#eff5f3;color:#14735b;font-size:11px;font-weight:750;text-transform:uppercase;letter-spacing:.04em}.badge.warning{background:#fff2dc;color:#8b5a0b}.badge.error{background:#fdecea;color:#b42318}
 .entry strong{display:block;font-size:13px;line-height:1.4}.entry small{display:block;color:#65717b;font-size:12px;margin-top:4px;line-height:1.45}.time{font-size:11px;color:#7d8790;white-space:nowrap}
 .empty{padding:28px 0;text-align:center;color:#687681;font-size:13px}.errorbox{background:#fdecea;color:#a42920;border:1px solid #f1c5bf;border-radius:9px;padding:13px 15px;font-size:13px}
+.previewpanel{margin-bottom:18px}.previewhead{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}.previewlist{max-height:340px;overflow:auto}.previewrow{display:grid;grid-template-columns:minmax(120px,1fr) minmax(0,2fr);gap:12px;padding:10px 0;border-bottom:1px solid #edf0f2;font-size:12px}.previewrow strong{overflow-wrap:anywhere}.previewrow span{text-align:right;color:#52616d}.previewactions{display:flex;gap:9px;align-items:center;flex-wrap:wrap}.previewactions .search{width:160px}.previewnote{font-size:12px;margin:10px 0;color:#65717d}
 @media(max-width:860px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.two{grid-template-columns:1fr}}
 @media(max-width:550px){main{padding:22px 16px 60px}.grid{gap:8px}.card{padding:14px}.card .value{font-size:23px}.header{align-items:center}.entry{grid-template-columns:1fr auto}.entry .badge{grid-column:1/-1;width:max-content}.toolbar{flex-wrap:wrap}.controlpanel{align-items:stretch;flex-direction:column;gap:15px}.controlbutton{width:100%}}
 </style></head><body><main>
@@ -46,6 +47,8 @@ h1{font-size:30px;letter-spacing:-.04em;margin:6px 0 8px}h2{font-size:17px;lette
 <div class="card"><div class="label">New SKU candidates</div><div class="value" id="new">—</div><div class="hint">Found in daily discovery</div></div>
 </div>
 <section class="panel controlpanel" aria-labelledby="controlHeading"><div class="controlcopy"><div class="controltitle"><h2 id="controlHeading">Sync control</h2><span class="mode off" id="controlState">OFF</span></div><p id="controlMessage">Checking control status…</p><small id="controlHint"></small></div><button id="controlButton" class="controlbutton enable" type="button" disabled hidden>Enable syncing</button></section>
+<section class="panel previewpanel" aria-labelledby="initialHeading"><div class="previewhead"><div><h2 id="initialHeading">Initial copy preview</h2><p class="previewnote">Read-only snapshot: these child-store quantities would be set to the main store quantities during full rollout. Stock may change before then.</p></div><div class="previewactions"><input id="planSearch" class="search" type="search" placeholder="Find SKU" aria-label="Find SKU in initial copy plan"><button class="refresh" id="refreshPlan" type="button" hidden>Refresh stock plan</button></div></div><p class="previewnote" id="planSummary">Loading plan…</p><div id="planRows" class="previewlist"></div></section>
+<section class="panel previewpanel" aria-labelledby="queueHeading"><div class="previewhead"><div><h2 id="queueHeading">Pending work preview</h2><p class="previewnote">Queued Shopify changes and updates waiting while syncing is off. Estimates use current stock and will be checked again before any update.</p></div><button class="refresh" id="refreshPreview" type="button">Check current stock</button></div><p class="previewnote" id="queueSummary">Loading queue…</p><div id="queueRows" class="previewlist"></div></section>
 <div class="two"><section class="panel"><div class="panelhead"><h2>Connection details</h2></div><div class="facts">
 <div class="fact"><span>Main store</span><b>Firgelli Automation · 1350 Slater Road</b></div>
 <div class="fact"><span>Child store</span><b>Firgelli · Warehouse</b></div>
@@ -55,7 +58,7 @@ h1{font-size:30px;letter-spacing:-.04em;margin:6px 0 8px}h2{font-size:17px;lette
 <section class="panel"><div class="panelhead"><div><h2>Activity history</h2><p class="muted">Recent events recorded by this app. Times shown in your local time zone.</p></div><span class="muted" id="updated"></span></div>
 <div class="toolbar"><input id="search" class="search" type="search" placeholder="Filter by SKU" aria-label="Filter by SKU"><div class="tabs"><button class="tab active" data-filter="all">All</button><button class="tab" data-filter="problems">Warnings & errors</button><button class="tab" data-filter="changes">Stock changes</button></div></div><div id="activity" class="list"></div></section>
 </main><script nonce="${nonce}">
-const el=id=>document.getElementById(id);let data=null,filter='all',loading=false,retryTimer=null,sessionFailures=0;
+const el=id=>document.getElementById(id);let data=null,plan=null,preview=null,filter='all',loading=false,retryTimer=null,sessionFailures=0;
 const date=value=>value?new Date(value).toLocaleString(): 'Not yet recorded';
 const names={webhook:'Stock change received',change:'Stock change detected',write:'Quantity updated',
   bootstrap:'SKU initialized',auto_enroll:'New SKU enrolled',discovery:'Daily SKU check',
@@ -70,7 +73,24 @@ function line(e){const title=names[e.type]||e.type;const sku=e.sku?' · '+e.sku:
 function renderRows(target,rows,empty){const box=el(target);box.replaceChildren();if(!rows.length){box.append(node('div','empty',empty));return}
   for(const e of rows){const row=node('div','entry');row.append(node('span','badge '+(e.level==='error'?'error':e.level==='warning'?'warning':''),e.level));
     const body=node('div');const info=line(e);body.append(node('strong','',info.title));if(info.detail)body.append(node('small','',info.detail));row.append(body,node('span','time',date(e.at)));box.append(row)}}
+function previewRow(target,sku,detail){const row=node('div','previewrow');row.append(node('strong','',sku),node('span','',detail));target.append(row)}
+function renderPlan(){const box=el('planRows');box.replaceChildren();if(!plan?.planId){el('planSummary').textContent='No stock plan has been generated yet. Refresh the stock plan to preview it.';return}
+  const changes=plan.changes||[];const eligible=plan.eligible??plan.candidates?.length??0;el('planSummary').textContent=eligible+' matching SKUs · '+changes.length+' child quantities would change · '+(eligible-changes.length)+' already match · snapshot '+date(plan.planId);
+  const query=el('planSearch').value.trim().toLowerCase();const filtered=changes.filter(r=>r.sku.toLowerCase().includes(query));
+  if(!filtered.length){box.append(node('div','empty',query?'No changed SKUs match this search.':'No child quantities need changing in this snapshot.'));return}
+  for(const row of filtered)previewRow(box,row.sku,'Child '+row.childQuantity+' → '+row.mainQuantity+' (main)');}
+function renderQueue(){if(!data)return;const box=el('queueRows');box.replaceChildren();const jobs=data.pendingJobs||[],writes=data.pendingWrites||[];
+  el('queueSummary').textContent=data.status.pendingJobs+' queued events · '+data.status.pendingWrites+' planned updates'+(preview?' · checked '+date(preview.checkedAt):' · click Check current stock for estimated quantities');
+  const bySku=new Map((preview?.rows||[]).map(r=>[r.sku,r]));
+  for(const write of writes)previewRow(box,write.sku,(write.side==='main'?'Main':'Child')+' '+write.from_qty+' → '+write.to_qty+(write.attempts?' · retry '+write.attempts:''));
+  for(const job of jobs){const row=bySku.get(job.sku);let detail=job.event_count+' queued event'+(job.event_count===1?'':'s')+' · '+date(job.created_at);
+    if(row)detail+=' · '+(row.error||row.note||('Main '+row.main+' → '+row.target+'; child '+row.child+' → '+row.target));
+    previewRow(box,job.sku,detail)}
+  if(!jobs.length&&!writes.length)box.append(node('div','empty','No queued stock changes or pending updates.'));
+  if(data.status.pendingJobs>jobs.reduce((sum,row)=>sum+row.event_count,0))box.append(node('p','previewnote','More queued events exist. The first 100 SKUs are shown.'));
+  if(preview&&preview.previewedSkus<jobs.length)box.append(node('p','previewnote','Quantity estimates are shown for the first 20 queued SKUs.'));}
 function render(){if(!data)return;const s=data.status,c=data.control;el('live').textContent=s.active?'On':'Off';el('live').className='value '+(s.active?'good':'bad');
+  el('refreshPlan').hidden=!c.canManage;
   el('tracked').textContent=s.initializedSkus;el('pending').textContent=s.pendingJobs+s.pendingWrites;el('pending').className='value '+(s.pendingJobs+s.pendingWrites?'bad':'good');
   el('new').textContent=s.discovery.candidateCount;el('discovery').textContent=date(s.discovery.lastScanAt);el('scan').textContent=date(data.lastCompletedScan);
   el('updated').textContent='Updated '+new Date().toLocaleTimeString();const banner=el('banner');banner.className='banner '+(s.active?'good':'');
@@ -84,7 +104,11 @@ function render(){if(!data)return;const s=data.status,c=data.control;el('live').
   el('problemCount').textContent=activeRetries.length+' active retries';renderRows('problems',problems.slice(0,5),'No recent warnings or failed updates.');
   const q=el('search').value.trim().toLowerCase();let rows=data.activity.filter(e=>!q||e.sku?.toLowerCase().includes(q));
   if(filter==='problems')rows=rows.filter(e=>e.level!=='info');if(filter==='changes')rows=rows.filter(e=>['change','write','bootstrap','auto_enroll'].includes(e.type));
-  renderRows('activity',rows,'No events match this view.');}
+  renderRows('activity',rows,'No events match this view.');renderQueue();renderPlan();}
+async function viewerRequest(path,method='GET'){const request=async()=>fetch(path,{method,headers:{Authorization:'Bearer '+await window.shopify.idToken()},cache:'no-store'});
+  let res=await request();if(res.status===401)res=await request();if(!res.ok){const body=await res.json().catch(()=>({}));throw Error(body.error||'Preview unavailable ('+res.status+').')}return res.json()}
+async function loadPlan(refresh=false){const button=el('refreshPlan');button.disabled=true;try{plan=await viewerRequest('/viewer/plan',refresh?'POST':'GET');renderPlan()}catch(error){el('planSummary').textContent=error.message}finally{button.disabled=false}}
+async function loadPreview(){const button=el('refreshPreview');button.disabled=true;el('queueSummary').textContent='Checking current stock…';try{preview=await viewerRequest('/viewer/preview');renderQueue()}catch(error){el('queueSummary').textContent=error.message}finally{button.disabled=false}}
 async function load(){if(loading)return;loading=true;const btn=el('refresh');btn.disabled=true;try{if(!window.shopify?.idToken)throw Error('Open this page from the installed app in Shopify admin.');
   const request=async()=>fetch('/viewer/overview',{headers:{Authorization:'Bearer '+await window.shopify.idToken()},cache:'no-store'});
   let res=await request();if(res.status===401)res=await request();
@@ -94,7 +118,8 @@ async function load(){if(loading)return;loading=true;const btn=el('refresh');btn
       if(!retryTimer)retryTimer=setTimeout(()=>{retryTimer=null;load()},10000)
     }else{el('banner').className='errorbox';el('banner').textContent=err.message}}
   finally{loading=false;btn.disabled=false}}
-el('refresh').addEventListener('click',load);el('search').addEventListener('input',render);
+el('refresh').addEventListener('click',()=>{load();loadPlan();loadPreview()});el('search').addEventListener('input',render);el('planSearch').addEventListener('input',renderPlan);
+el('refreshPlan').addEventListener('click',()=>loadPlan(true));el('refreshPreview').addEventListener('click',loadPreview);
 el('controlButton').addEventListener('click',async()=>{if(!data?.control?.canManage||!data.control.rolloutReady)return;
   const action=data.control.active?'pause':'resume',button=el('controlButton');button.disabled=true;button.textContent=action==='pause'?'Pausing…':'Enabling…';
   try{const request=async()=>fetch('/viewer/control',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+await window.shopify.idToken()},body:JSON.stringify({action}),cache:'no-store'});
@@ -102,6 +127,6 @@ el('controlButton').addEventListener('click',async()=>{if(!data?.control?.canMan
     const result=await res.json();data.control=result.control;data.status.active=result.control.active;render();await load()
   }catch(err){el('controlMessage').textContent=err.message;button.disabled=false;button.textContent=action==='pause'?'Pause syncing':'Enable syncing'}});
 for(const tab of document.querySelectorAll('.tab'))tab.addEventListener('click',()=>{filter=tab.dataset.filter;for(const t of document.querySelectorAll('.tab'))t.classList.toggle('active',t===tab);render()});
-load();setInterval(load,45000);
+load().then(()=>{if(data){loadPlan();loadPreview()}});setInterval(load,45000);
 </script></body></html>`;
 }
